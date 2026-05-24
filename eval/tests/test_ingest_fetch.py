@@ -427,3 +427,19 @@ def test_paths_from_talks_yaml_returns_absolute_paths_for_ai_engineering_v0():
         "transcripts/ai_engineering_v0/W_CYk2ogcDI.en.vtt"
     )
     assert target.exists()
+
+
+# -- positional root regression --------------
+
+
+def test_local_fetcher_positional_root_resolves_video_id_vtt(tmp_path):
+    """LocalFsFetcher(tmp_path).fetch(video_id) must resolve to
+    <tmp_path>/<video_id>.vtt. Regression for the dataclass field order
+    bug where the positional Path was binding to `paths` (dict-typed)."""
+    (tmp_path / "abc-123.vtt").write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nhello world\n",
+        encoding="utf-8",
+    )
+    fetcher = LocalFsFetcher(tmp_path)  # POSITIONAL — must bind to root
+    result = fetcher.fetch("abc-123")
+    assert result.transcript_path == tmp_path / "abc-123.vtt"

@@ -66,8 +66,8 @@ class LocalFsFetcher:
     leaving no partial talks row.
     """
 
-    paths: dict[str, Path] | None = None
     root: Path | None = None
+    paths: dict[str, Path] | None = None
     captions_source: str = "manual_transcript"
 
     def fetch(self, video_id: str) -> FetchResult:
