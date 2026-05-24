@@ -14,7 +14,7 @@ help:
 	@echo "  db-down                  docker compose stop postgres"
 	@echo "  db-build                 docker compose build postgres"
 	@echo "  db-verify-ext            create pgmq + vector extensions (idempotent)"
-	@echo "  db-migrate               apply db migrations (placeholder until step 2)"
+	@echo "  db-migrate               apply pending raw-SQL migrations"
 	@echo "  db-reset                 drop volume + recreate postgres (destructive, prompts)"
 	@echo "  logs                     tail worker log ($$LENSGRAPH_LOG_PATH or default)"
 
@@ -59,14 +59,17 @@ db-verify-ext:
 	docker compose exec -T postgres psql -U lensgraph -d lensgraph -c "CREATE EXTENSION IF NOT EXISTS pgmq; CREATE EXTENSION IF NOT EXISTS vector;"
 
 db-migrate:
-	@echo "db-migrate: db/migrate.py lands in step 2 — not yet implemented"
+	uv run python -m db.migrate
 
 db-reset:
 	@read -p "This will DROP the postgres volume and all data. Type 'yes' to continue: " ans; \
 	 [ "$$ans" = "yes" ] || { echo "aborted"; exit 1; }
 	docker compose down -v
 	docker compose up -d postgres
-	@echo "db-reset: volume recreated; db-migrate is a placeholder"
+	@echo "Waiting for postgres to become healthy..."
+	@until docker compose exec -T postgres pg_isready -U lensgraph -d lensgraph >/dev/null 2>&1; do sleep 1; done
+	$(MAKE) db-migrate
+	@echo "db-reset: complete — migrations applied"
 
 logs:
 	tail -f $${LENSGRAPH_LOG_PATH:-./.lensgraph/logs/workers.log}
