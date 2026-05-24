@@ -112,95 +112,179 @@ def test_upsert_format_tags_round_trips_array(conn):
 # -- ingest_step_status ---------------------------------------------------
 
 
-def test_iss_upsert_inserts_pending_row(conn):
-    upsert(conn, _make_talk(video_id="iss-test"))
-    iss.upsert(conn, "iss-test", step="fetch")
-    row = conn.execute(
-        "SELECT status, attempts, started_at, completed_at "
-        "FROM ingest_step_status WHERE video_id=%s AND step=%s AND entity_id=0",
-        ("iss-test", "fetch"),
+def _setup_pending(conn, video_id: str, step: str = "fetch", entity_id: int = 0):
+    """Ensure a talk + a pending status row exist for the given identity."""
+    upsert(conn, _make_talk(video_id=video_id))
+    iss.upsert(conn, video_id, step=step, entity_id=entity_id)
+
+
+def _read_row(conn, video_id: str, step: str = "fetch", entity_id: int = 0):
+    return conn.execute(
+        "SELECT status, attempts, started_at, completed_at, error_payload "
+        "FROM ingest_step_status WHERE video_id=%s AND step=%s AND entity_id=%s",
+        (video_id, step, entity_id),
     ).fetchone()
-    assert row == ("pending", 0, None, None)
+
+
+def test_iss_upsert_inserts_pending_row(conn):
+    _setup_pending(conn, "iss-test")
+    row = _read_row(conn, "iss-test")
+    status, attempts, started_at, completed_at, error_payload = row
+    assert status == "pending"
+    assert attempts == 0
+    assert started_at is None
+    assert completed_at is None
+    assert error_payload is None
 
 
 def test_iss_upsert_overwrites_status_only(conn):
-    upsert(conn, _make_talk(video_id="iss-test"))
+    _setup_pending(conn, "iss-test")
     iss.upsert(conn, "iss-test", step="fetch", status="failed")
     iss.upsert(conn, "iss-test", step="fetch", status="pending")
-    row = conn.execute(
-        "SELECT status FROM ingest_step_status WHERE video_id=%s AND step=%s",
-        ("iss-test", "fetch"),
-    ).fetchone()
-    assert row[0] == "pending"
+    assert _read_row(conn, "iss-test")[0] == "pending"
 
 
-def test_iss_claim_transitions_pending_to_in_progress(conn):
-    for v in ("a", "b", "c"):
-        upsert(conn, _make_talk(video_id=v))
-        iss.upsert(conn, v, step="fetch")
-    claimed = iss.claim_for_update(conn, "fetch", batch_size=2)
-    assert len(claimed) == 2
-    for video_id, _ in claimed:
-        row = conn.execute(
-            "SELECT status, attempts, started_at FROM ingest_step_status "
-            "WHERE video_id=%s AND step='fetch' AND entity_id=0",
-            (video_id,),
-        ).fetchone()
-        status, attempts, started_at = row
-        assert status == "in_progress"
-        assert attempts == 1
-        assert started_at is not None
+# claim_for_update — exact-row identity contract
 
 
-def test_iss_claim_does_not_double_claim_in_progress(conn):
-    for v in ("a", "b", "c"):
-        upsert(conn, _make_talk(video_id=v))
-        iss.upsert(conn, v, step="fetch")
-    first = iss.claim_for_update(conn, "fetch", batch_size=2)
-    second = iss.claim_for_update(conn, "fetch", batch_size=10)
-    assert len(first) == 2
-    assert len(second) == 1
-    assert {v for v, _ in first}.isdisjoint({v for v, _ in second})
+def test_iss_claim_missing_row_raises(conn):
+    """Worker dequeued a payload referencing a row that doesn't exist —
+    contract violation, raise rather than silently succeed."""
+    with conn.transaction(), pytest.raises(iss.IngestStepNotFoundError):
+        iss.claim_for_update(conn, "ghost-vid", step="fetch")
 
 
-def test_iss_mark_completed_sets_completed_at(conn):
-    upsert(conn, _make_talk(video_id="iss-test"))
-    iss.upsert(conn, "iss-test", step="fetch")
-    iss.claim_for_update(conn, "fetch", batch_size=1)
-    iss.mark_completed(conn, "iss-test", step="fetch")
-    row = conn.execute(
-        "SELECT status, completed_at FROM ingest_step_status "
-        "WHERE video_id=%s AND step='fetch' AND entity_id=0",
-        ("iss-test",),
-    ).fetchone()
-    assert row[0] == "completed"
-    assert row[1] is not None
+def test_iss_claim_pending_transitions_to_in_progress(conn):
+    _setup_pending(conn, "iss-test")
+    with conn.transaction():
+        result = iss.claim_for_update(conn, "iss-test", step="fetch")
+    assert result == iss.ClaimResult(status="in_progress", attempts=1)
+    status, attempts, started_at, _, _ = _read_row(conn, "iss-test")
+    assert status == "in_progress"
+    assert attempts == 1
+    assert started_at is not None
+
+
+def test_iss_claim_on_completed_returns_without_increment(conn):
+    """A re-delivered PGMQ job for already-completed work must NOT re-run."""
+    _setup_pending(conn, "iss-test")
+    iss.upsert(conn, "iss-test", step="fetch", status="completed")
+    before = _read_row(conn, "iss-test")
+    with conn.transaction():
+        result = iss.claim_for_update(conn, "iss-test", step="fetch")
+    after = _read_row(conn, "iss-test")
+    assert result.status == "completed"
+    assert result.attempts == before[1]
+    assert after[1] == before[1]  # attempts unchanged
+    assert after[0] == "completed"  # status unchanged
+
+
+def test_iss_claim_on_skipped_returns_without_increment(conn):
+    """Skipped (e.g. asr on a video with manual captions) — same as completed."""
+    _setup_pending(conn, "iss-test")
+    iss.upsert(conn, "iss-test", step="fetch", status="skipped")
+    with conn.transaction():
+        result = iss.claim_for_update(conn, "iss-test", step="fetch")
+    assert result.status == "skipped"
+    assert _read_row(conn, "iss-test")[0] == "skipped"
+
+
+def test_iss_claim_on_failed_transitions_to_in_progress(conn):
+    """Failed rows are eligible for retry: claim transitions + bumps attempts."""
+    _setup_pending(conn, "iss-test")
+    iss.upsert(conn, "iss-test", step="fetch", status="failed")
+    with conn.transaction():
+        result = iss.claim_for_update(conn, "iss-test", step="fetch")
+    assert result.status == "in_progress"
+    assert result.attempts == 1
+    assert _read_row(conn, "iss-test")[0] == "in_progress"
+
+
+def test_iss_claim_on_in_progress_re_transitions_for_redelivery(conn):
+    """PGMQ visibility timeout expiry + worker crash leaves status in_progress.
+    A subsequent claim must re-transition and increment attempts."""
+    _setup_pending(conn, "iss-test")
+    with conn.transaction():
+        first = iss.claim_for_update(conn, "iss-test", step="fetch")
+    assert first.attempts == 1
+    with conn.transaction():
+        second = iss.claim_for_update(conn, "iss-test", step="fetch")
+    assert second.status == "in_progress"
+    assert second.attempts == 2
+    assert _read_row(conn, "iss-test")[1] == 2
+
+
+def test_iss_claim_for_video_b_does_not_touch_video_a(conn):
+    """The job-identity contract: claiming B's row must leave A untouched.
+
+    Regression check for the pre-fix bug where claim_for_update picked
+    'some pending row of step X' — under contention, a worker handling B's
+    job could transition A's row instead.
+    """
+    for v in ("vid-a", "vid-b"):
+        _setup_pending(conn, v)
+    with conn.transaction():
+        result = iss.claim_for_update(conn, "vid-b", step="fetch")
+    assert result.status == "in_progress"
+    a_status, a_attempts, a_started, _, _ = _read_row(conn, "vid-a")
+    b_status, b_attempts, b_started, _, _ = _read_row(conn, "vid-b")
+    assert (a_status, a_attempts, a_started) == ("pending", 0, None)
+    assert b_status == "in_progress"
+    assert b_attempts == 1
+    assert b_started is not None
+
+
+# mark_completed / mark_failed — only transition in_progress rows
+
+
+def test_iss_mark_completed_transitions_in_progress(conn):
+    _setup_pending(conn, "iss-test")
+    with conn.transaction():
+        iss.claim_for_update(conn, "iss-test", step="fetch")
+    assert iss.mark_completed(conn, "iss-test", step="fetch") is True
+    status, _, _, completed_at, _ = _read_row(conn, "iss-test")
+    assert status == "completed"
+    assert completed_at is not None
+
+
+def test_iss_mark_completed_no_op_when_not_in_progress(conn):
+    """Calling mark_completed on a pending row is a no-op — returns False;
+    the row stays pending."""
+    _setup_pending(conn, "iss-test")
+    assert iss.mark_completed(conn, "iss-test", step="fetch") is False
+    status, _, _, completed_at, _ = _read_row(conn, "iss-test")
+    assert status == "pending"
+    assert completed_at is None
 
 
 def test_iss_mark_failed_persists_error_payload(conn):
-    upsert(conn, _make_talk(video_id="iss-test"))
-    iss.upsert(conn, "iss-test", step="fetch")
-    iss.claim_for_update(conn, "fetch", batch_size=1)
+    _setup_pending(conn, "iss-test")
+    with conn.transaction():
+        iss.claim_for_update(conn, "iss-test", step="fetch")
     payload = {"reason": "yt-dlp 404", "attempt_count": 1}
-    iss.mark_failed(conn, "iss-test", step="fetch", error_payload=payload)
-    row = conn.execute(
-        "SELECT status, completed_at, error_payload FROM ingest_step_status "
-        "WHERE video_id=%s AND step='fetch' AND entity_id=0",
-        ("iss-test",),
-    ).fetchone()
-    assert row[0] == "failed"
-    assert row[1] is not None
-    assert row[2] == payload
+    assert iss.mark_failed(conn, "iss-test", step="fetch", error_payload=payload) is True
+    status, _, _, completed_at, error_payload = _read_row(conn, "iss-test")
+    assert status == "failed"
+    assert completed_at is not None
+    assert error_payload == payload
+
+
+def test_iss_mark_failed_no_op_when_not_in_progress(conn):
+    _setup_pending(conn, "iss-test")
+    assert iss.mark_failed(conn, "iss-test", step="fetch", error_payload={"x": 1}) is False
+    status, _, _, _, error_payload = _read_row(conn, "iss-test")
+    assert status == "pending"
+    assert error_payload is None
 
 
 def test_iss_entity_id_fanout_for_per_chunk_steps(conn):
-    """Fan-out steps (embed_text per chunk) use entity_id != 0."""
+    """Fan-out steps (embed_text per chunk) use entity_id != 0 — each row is
+    independently claimable."""
     upsert(conn, _make_talk(video_id="iss-test"))
     iss.upsert(conn, "iss-test", step="embed_text", entity_id=1)
     iss.upsert(conn, "iss-test", step="embed_text", entity_id=2)
-    rows = conn.execute(
-        "SELECT entity_id, status FROM ingest_step_status "
-        "WHERE video_id=%s AND step='embed_text' ORDER BY entity_id",
-        ("iss-test",),
-    ).fetchall()
-    assert rows == [(1, "pending"), (2, "pending")]
+    with conn.transaction():
+        result = iss.claim_for_update(conn, "iss-test", step="embed_text", entity_id=1)
+    assert result.status == "in_progress"
+    # entity_id=2 untouched
+    assert _read_row(conn, "iss-test", step="embed_text", entity_id=2)[0] == "pending"
