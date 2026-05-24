@@ -6,7 +6,7 @@ Multimodal video RAG over engineering conference talks. Eval-first; the eval har
 
 ## Hard rules
 
-1. **Eval before code.** Do not write or modify `ingest/`, `chunking/`, `retrieve/`, `generate/`, `api/`, or `web/` until `make phase0-gate` passes (≥10 verified examples + strict transcript validation). The gate is enforceable: it is `uv run python eval/validate.py --strict --min-verified 10`. Run it locally before any commit touching those directories.
+1. **Eval before code.** Do not write or modify `ingest/`, `chunking/`, `retrieve/`, `generate/`, `api/`, or `web/` until `make phase0-gate` passes. The gate requires: ≥10 verified non-negative gold examples (single_clip + synthesis only — negatives do not count because they carry no retrieval signal) AND those examples must reference ≥2 distinct talks AND strict transcript validation must pass. Concretely: `uv run python eval/validate.py --strict --min-gold 10 --min-talks 2`. Run it locally before any commit touching those directories.
 
 2. **The test set is locked.** Never modify `eval/corpora/*/test_gold.jsonl` during development. Its SHA256 in the README is a contract. If a change is genuinely required, document it as a methodology revision and reset all downstream metrics.
 

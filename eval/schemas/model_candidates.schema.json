@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lensgraph.dev/schemas/model_candidates.schema.json",
+  "title": "LensGraph Model Candidates Config",
+  "description": "Source of truth for the phase-2 bakeoff runner. Validates eval/config/model_candidates.yaml. Schema is permissive on per-option shape (text embedding vs generator pricing differs) but strict on the fields that catch real bugs: IDs, providers, dates, prices, sources.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "last_updated",
+    "prices_checked_at",
+    "sources",
+    "inference_providers",
+    "selection_rule",
+    "candidates"
+  ],
+  "properties": {
+    "last_updated": { "type": "string", "format": "date" },
+    "prices_checked_at": { "type": "string", "format": "date" },
+    "sources": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "format": "uri" }
+    },
+    "inference_providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary"],
+      "properties": {
+        "primary": { "type": "string", "minLength": 1 },
+        "fallback_router": { "type": "string" },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["provider", "reason"],
+            "properties": {
+              "provider": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 10 }
+            }
+          }
+        }
+      }
+    },
+    "selection_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tie_break_pp", "dev_set", "test_set_for_writeup_only"],
+      "properties": {
+        "tie_break_pp": { "type": "number", "minimum": 0, "maximum": 100 },
+        "dev_set": { "type": "string", "minLength": 1 },
+        "test_set_for_writeup_only": { "type": "string", "minLength": 1 }
+      }
+    },
+    "candidates": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["options"],
+        "properties": {
+          "minimums": { "type": "object", "additionalProperties": true },
+          "storage_backend": { "type": "string" },
+          "fusion": { "type": "string" },
+          "options": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["id", "provider", "provider_model_id", "family"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9._\\-]+$",
+                  "description": "Lowercase, dot/dash/underscore allowed. No spaces or uppercase."
+                },
+                "provider": {
+                  "enum": ["deepinfra", "openrouter", "anthropic", "openai", "voyage", "google", "local"]
+                },
+                "provider_model_id": { "type": "string", "minLength": 1 },
+                "family": { "type": "string", "minLength": 1 },
+                "license": { "type": "string" },
+                "hardware": { "type": "string" },
+                "notes": { "type": "string" },
+                "channels": {
+                  "type": "array",
+                  "items": { "enum": ["dense", "sparse", "multi_vector"] }
+                },
+                "storage": { "type": "object", "additionalProperties": true },
+                "price_per_mtok_usd": { "type": ["number", "null"], "minimum": 0 },
+                "price_input_per_mtok_usd": { "type": ["number", "null"], "minimum": 0 },
+                "price_output_per_mtok_usd": { "type": ["number", "null"], "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

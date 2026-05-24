@@ -11,7 +11,7 @@ Goal: a green `make validate-evals` against a real corpus of ~80 examples, and a
 | 1 | Schemas, validator, fixtures, CI green. Curation playbook drafted. 10–12 talks selected with `talks.yaml` complete. |
 | 2 | 80 gold/negative/synthesis examples curated and verified. Locked `test_gold.jsonl` SHA in README. |
 
-**Exit gate:** `make validate-evals` AND `make phase0-gate` pass. CI workflow runs both on every push.
+**Exit gate:** `make validate-evals` AND `make phase0-gate` pass locally. CI runs `make validate-evals` + `make lint` on every push/PR. `phase0-gate` is intentionally a *local* gate (CI cannot scope it per-directory) and is the developer's responsibility before any commit that touches `ingest/`, `chunking/`, `retrieve/`, `generate/`, `api/`, or `web/`.
 
 ## Phase 1 — Ingestion + retrieval scaffolding (weeks 3–5)
 

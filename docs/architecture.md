@@ -32,23 +32,24 @@ Postgres + pgvector (incl. sparsevec) as the single source of truth, LangGraph a
 │   hybrid (slide_boundary primary, topic_llm fallback)               │
 ├─────────────────────────────────────────────────────────────────────┤
 │ ingest/                                                              │
-│   yt-dlp → WhisperX (if needed) → frame sampling → ColPali embeds   │
+│   yt-dlp → WhisperX (if needed) → frame sampling → ColQwen2.5 embeds│
 │   PGMQ jobs orchestrate the ingestion DAG per video                 │
 ├─────────────────────────────────────────────────────────────────────┤
 │ Postgres                                                             │
 │   tables: talks, transcripts, chunks (text), frames, frame_embeds,  │
-│           text_embeds, eval_runs, eval_results, traces              │
+│           dense_embeds, sparse_embeds, token_embeds,                 │
+│           eval_runs, eval_results, traces                            │
 │   extensions: pgvector, pgmq                                        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Why these choices
 
-**LangGraph, not LangChain or LlamaIndex.** The retrieve → verify → re-retrieve loop is cyclical. LangGraph is the only mature option that treats agent state as a first-class graph. LangChain core is dying; LlamaIndex is broader but its video / multimodal indexing is weaker than rolling our own ColPali integration.
+**LangGraph, not LangChain or LlamaIndex.** The retrieve → verify → re-retrieve loop is cyclical. LangGraph is the only mature option that treats agent state as a first-class graph. LangChain core is dying; LlamaIndex is broader but its video / multimodal indexing is weaker than rolling our own ColQwen2.5 integration.
 
 **Postgres + pgvector, no Redis, no separate queue.** Solo-project complexity budget is finite. PGMQ (Postgres-backed message queue) handles ingestion jobs; pgvector handles embeddings; relational tables handle everything else. One backup, one connection string, one mental model.
 
-**ColPali for slide retrieval.** Slides are visual documents. OCR-then-embed is the 2023 approach and loses layout. ColPali / ColQwen2-style late-interaction over patch embeddings is the 2026 default for any document-heavy retrieval.
+**ColQwen2.5 for slide retrieval.** Slides are visual documents. OCR-then-embed is the 2023 approach and loses layout. ColQwen2.5 (late-interaction over patch embeddings via `colpali-engine`) is the current ViDoRe V2 leader and the 2026 default for document-heavy retrieval.
 
 **Cross-family LLM judge.** If Claude drafts curation candidates, GPT-4-class is the judge, and vice versa. Mitigates same-model bias in faithfulness scoring.
 
@@ -76,10 +77,13 @@ yt-dlp ────────► transcript.vtt ──► sha256 ──► tal
 frame sample       chunk (5 strategies, configurable)
    │                  │
    ▼                  ▼
-ColPali embed     text embed (Voyage-3-large)
+ColQwen2.5        BGE-M3 all three channels
+patch embeds      (dense + sparse + multi-vector)
    │                  │
    └──► frames        └──► chunks
-        + frame_embeds      + text_embeds
+        + frame_embeds      + dense_embeds   (pgvector HNSW)
+                            + sparse_embeds  (pgvector sparsevec HNSW)
+                            + token_embeds   (per-token arrays; MaxSim in app)
 ```
 
 Each step is a PGMQ job. A video that fails mid-ingestion can resume from the last successful step.

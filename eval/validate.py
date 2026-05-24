@@ -30,11 +30,11 @@ from jsonschema import Draft202012Validator, FormatChecker
 EVAL_ROOT = Path(__file__).resolve().parent
 SCHEMAS_DIR = EVAL_ROOT / "schemas"
 CORPORA_DIR = EVAL_ROOT / "corpora"
+CONFIG_DIR = EVAL_ROOT / "config"
 FIXTURES_DIR = EVAL_ROOT / "tests" / "fixtures"
 PROJECT_ROOT = EVAL_ROOT.parent
 
 GOLD_FILES = ["dev_gold.jsonl", "test_gold.jsonl", "negative.jsonl", "synthesis.jsonl"]
-PHASE0_MIN_VERIFIED = 10  # CLAUDE.md hard rule 1: no implementation code below this
 
 
 def load_validator(name: str) -> Draft202012Validator:
@@ -54,11 +54,16 @@ def iter_jsonl(path: Path):
             yield i, exc
 
 
-def count_verified_examples() -> int:
-    """Count verified examples committed across all corpora gold/negative/synthesis files."""
-    n = 0
+def count_verified_gold_and_talks() -> tuple[int, int]:
+    """Count verified non-negative examples (single_clip + synthesis) and the distinct talks
+    they reference. Negatives do not contribute to the phase-0 gate because they teach the
+    system nothing about retrieval; 10 negatives could trivially unlock implementation work
+    that has no signal-bearing examples to validate against.
+    """
+    n_examples = 0
+    talk_ids: set[str] = set()
     if not CORPORA_DIR.exists():
-        return 0
+        return 0, 0
     for corpus_dir in sorted(CORPORA_DIR.iterdir()):
         if not corpus_dir.is_dir():
             continue
@@ -67,9 +72,21 @@ def count_verified_examples() -> int:
             if not f.exists():
                 continue
             for _, parsed in iter_jsonl(f):
-                if isinstance(parsed, dict) and parsed.get("verified") is True:
-                    n += 1
-    return n
+                if not isinstance(parsed, dict):
+                    continue
+                if parsed.get("verified") is not True:
+                    continue
+                qt = parsed.get("question_type")
+                if qt not in ("single_clip", "synthesis"):
+                    continue
+                n_examples += 1
+                if qt == "single_clip" and parsed.get("video_id"):
+                    talk_ids.add(parsed["video_id"])
+                elif qt == "synthesis":
+                    for span in parsed.get("gold_spans") or []:
+                        if span.get("video_id"):
+                            talk_ids.add(span["video_id"])
+    return n_examples, len(talk_ids)
 
 
 def sha256_file(path: Path) -> str:
@@ -105,6 +122,40 @@ def validate_boundary_record(ex: dict, audit_v: Draft202012Validator, source: st
     return errs
 
 
+def validate_model_candidates() -> list[str]:
+    """Validate eval/config/model_candidates.yaml against its schema. Returns error messages."""
+    errors: list[str] = []
+    mc_path = CONFIG_DIR / "model_candidates.yaml"
+    if not mc_path.exists():
+        return [f"{mc_path}: model_candidates.yaml is missing (required by ADR 004)"]
+    mc_v = load_validator("model_candidates.schema.json")
+    try:
+        data = yaml.safe_load(mc_path.read_text())
+    except yaml.YAMLError as exc:
+        return [f"{mc_path}: invalid YAML: {exc}"]
+    if not isinstance(data, dict):
+        return [f"{mc_path}: top-level must be a mapping, got {type(data).__name__}"]
+    for err in mc_v.iter_errors(data):
+        loc = "/".join(str(p) for p in err.absolute_path) or "<root>"
+        errors.append(f"{mc_path}::{loc}: {err.message}")
+    # Cross-check: inference_providers.primary must appear as a provider on at least one option.
+    primary = data.get("inference_providers", {}).get("primary")
+    if primary:
+        providers_used = {
+            opt.get("provider")
+            for group in (data.get("candidates") or {}).values()
+            if isinstance(group, dict)
+            for opt in (group.get("options") or [])
+            if isinstance(opt, dict)
+        }
+        if primary not in providers_used:
+            errors.append(
+                f"{mc_path}: inference_providers.primary='{primary}' is not used by any "
+                f"candidate option (providers seen: {sorted(providers_used)})"
+            )
+    return errors
+
+
 def validate_corpora(strict: bool = False) -> int:
     errors: list[str] = []
     warnings: list[str] = []
@@ -112,6 +163,9 @@ def validate_corpora(strict: bool = False) -> int:
     talk_v = load_validator("talk.schema.json")
     gold_v = load_validator("gold_example.schema.json")
     audit_v = load_validator("boundary_audit.schema.json")
+
+    # Validate the model candidates config (source of truth for the bakeoff runner).
+    errors.extend(validate_model_candidates())
 
     if not CORPORA_DIR.exists():
         print(f"OK: no corpora directory at {CORPORA_DIR}")
@@ -297,13 +351,23 @@ def main() -> int:
         help="Fail on missing transcript files (commit gate). Default is warn-only for CI.",
     )
     parser.add_argument(
-        "--min-verified",
+        "--min-gold",
         type=int,
         default=0,
         help=(
-            "Phase-0 gate: fail unless the corpus contains at least N verified examples "
-            "across all gold/negative/synthesis files. Use 0 to skip the gate. "
-            "make phase0-gate calls this with the project default (10)."
+            "Phase-0 gate: fail unless the corpus contains at least N verified non-negative "
+            "examples (single_clip + synthesis). Negatives are excluded — they cannot unlock "
+            "implementation work because they have no signal-bearing answer. Use 0 to skip."
+        ),
+    )
+    parser.add_argument(
+        "--min-talks",
+        type=int,
+        default=0,
+        help=(
+            "Phase-0 gate companion: fail unless the verified non-negative examples reference "
+            "at least N distinct talks. Prevents 10-examples-on-one-talk false signals. "
+            "Use 0 to skip."
         ),
     )
     args = parser.parse_args()
@@ -314,17 +378,24 @@ def main() -> int:
     rc_corpora = validate_corpora(strict=args.strict)
     rc_self = run_self_test()
     rc_gate = 0
-    if args.min_verified > 0:
-        n = count_verified_examples()
-        if n < args.min_verified:
+    if args.min_gold > 0 or args.min_talks > 0:
+        n_gold, n_talks = count_verified_gold_and_talks()
+        gold_ok = args.min_gold == 0 or n_gold >= args.min_gold
+        talks_ok = args.min_talks == 0 or n_talks >= args.min_talks
+        if not (gold_ok and talks_ok):
             print(
-                f"\nPHASE-0 GATE FAIL: {n} verified examples < required {args.min_verified}. "
+                f"\nPHASE-0 GATE FAIL: {n_gold} verified non-negative examples "
+                f"(need >= {args.min_gold}) across {n_talks} distinct talks "
+                f"(need >= {args.min_talks}). "
                 "Implementation code (ingest/, chunking/, retrieve/, generate/, api/, web/) "
                 "must not be modified until this gate passes. See CLAUDE.md hard rule 1."
             )
             rc_gate = 1
         else:
-            print(f"PHASE-0 GATE OK: {n} verified examples (>= {args.min_verified})")
+            print(
+                f"PHASE-0 GATE OK: {n_gold} verified non-negative examples across "
+                f"{n_talks} distinct talks (>= {args.min_gold}/{args.min_talks})"
+            )
     return rc_corpora or rc_self or rc_gate
 
 

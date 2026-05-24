@@ -33,7 +33,7 @@ The resume line is currently a **target**, replaced with measured numbers only a
 
 ## What is intentionally not here yet
 
-`ingest/`, `chunking/`, `retrieve/`, `generate/`, `api/`, `web/` are empty. Eval comes first. The first 10 gold examples must exist and `make validate-evals` must pass before any retrieval code is written. This is non-negotiable; it is the methodological commitment of the project.
+`ingest/`, `chunking/`, `retrieve/`, `generate/`, `api/`, `web/` are empty. Eval comes first. `make phase0-gate` must pass (≥10 verified non-negative gold examples across ≥2 talks, plus strict transcript validation) before any code lands in those directories. This is non-negotiable; it is the methodological commitment of the project.
 
 ## Quickstart
 

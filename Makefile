@@ -6,7 +6,7 @@ help:
 	@echo "  validate-evals           validate schemas + corpora + run self-test (CI)"
 	@echo "  validate-evals-strict    same, but fail on missing transcript files (commit gate)"
 	@echo "  validate-self-test       only run fixture self-test (fast schema iteration)"
-	@echo "  phase0-gate              fail unless >= 10 verified examples (gate before touching implementation code)"
+	@echo "  phase0-gate              fail unless >= 10 verified non-negative examples across >= 2 talks (commit gate before implementation code)"
 	@echo "  fmt                      ruff format"
 	@echo "  lint                     ruff check"
 
@@ -23,7 +23,7 @@ validate-self-test:
 	uv run python eval/validate.py --self-test
 
 phase0-gate:
-	uv run python eval/validate.py --strict --min-verified 10
+	uv run python eval/validate.py --strict --min-gold 10 --min-talks 2
 
 fmt:
 	uv run ruff format .
