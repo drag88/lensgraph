@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import yaml
+
 
 @dataclass(frozen=True)
 class FetchResult:
@@ -51,15 +53,32 @@ def _sha256_file(path: Path) -> str:
 class LocalFsFetcher:
     """Reads pre-staged transcripts from a local directory.
 
-    Resolves `<root>/<video_id>.vtt`. Raises FileNotFoundError if absent —
-    the pipeline transaction rolls back, leaving no partial talks row.
+    Two resolution modes:
+
+      paths={video_id: Path}  explicit map; preferred for production use
+                              with talks.yaml-derived transcript_path values.
+      root=<dir>              <root>/<video_id>.vtt convention; kept for
+                              fixture-style tests staging synthetic VTTs.
+
+    `paths` takes precedence; `root` is fallback for any video_id absent
+    from `paths`. Raises FileNotFoundError if neither resolves or the
+    resolved file does not exist — the pipeline transaction rolls back,
+    leaving no partial talks row.
     """
 
-    root: Path
+    paths: dict[str, Path] | None = None
+    root: Path | None = None
     captions_source: str = "manual_transcript"
 
     def fetch(self, video_id: str) -> FetchResult:
-        path = self.root / f"{video_id}.vtt"
+        if self.paths is not None and video_id in self.paths:
+            path = self.paths[video_id]
+        elif self.root is not None:
+            path = self.root / f"{video_id}.vtt"
+        else:
+            raise FileNotFoundError(
+                f"no transcript for {video_id!r}: neither paths nor root configured"
+            )
         if not path.exists():
             raise FileNotFoundError(f"no transcript at {path}")
         return FetchResult(
@@ -67,6 +86,32 @@ class LocalFsFetcher:
             transcript_sha256=_sha256_file(path),
             captions_source=self.captions_source,
         )
+
+
+def paths_from_talks_yaml(
+    corpus_dir: Path,
+    *,
+    repo_root: Path | None = None,
+) -> dict[str, Path]:
+    """Read <corpus_dir>/talks.yaml and return {video_id: absolute transcript Path}.
+
+    transcript_path values in talks.yaml are repo-relative; resolved against
+    repo_root. Default repo_root = corpus_dir.parent.parent.parent (i.e.
+    eval/corpora/<corpus> backs out to repo root).
+    """
+    corpus_dir = Path(corpus_dir)
+    if repo_root is None:
+        repo_root = corpus_dir.resolve().parent.parent.parent
+    else:
+        repo_root = Path(repo_root).resolve()
+
+    talks_yaml = corpus_dir / "talks.yaml"
+    with talks_yaml.open(encoding="utf-8") as f:
+        talks = yaml.safe_load(f)
+    return {
+        talk["video_id"]: (repo_root / talk["transcript_path"]).resolve()
+        for talk in talks
+    }
 
 
 @dataclass(frozen=True)

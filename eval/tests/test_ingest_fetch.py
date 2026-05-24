@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -27,7 +28,7 @@ from db.migrate import apply
 from db.repos import talks as talks_repo
 from db.repos.talks import Talk
 from ingest import pipeline
-from ingest.fetch import LocalFsFetcher
+from ingest.fetch import LocalFsFetcher, paths_from_talks_yaml
 from ingest.quality import probe
 from queues import pgmq_client
 
@@ -357,3 +358,72 @@ def test_quality_fails_on_placeholder_heavy_cues(tmp_path):
     assert result.details["cue_line_count"] == 2
     assert result.details["non_speech_lines"] == 2
     assert result.details["non_speech_ratio"] == pytest.approx(1.0)
+
+
+# -- talks.yaml path resolution -------------------------------------------
+
+
+def test_local_fetcher_resolves_explicit_paths_dict(tmp_path):
+    """paths={video_id: Path} overrides the <root>/<video_id>.vtt convention.
+    Real corpora use this mode — talks.yaml.transcript_path values are NOT
+    of the form <root>/<video_id>.vtt (they carry a `.en.vtt` suffix and
+    live under a corpus-specific subdir)."""
+    vtt_path = tmp_path / "v-1.en.vtt"
+    vtt_path.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nhello world\n",
+        encoding="utf-8",
+    )
+    fetcher = LocalFsFetcher(
+        paths={"v-1": vtt_path}, captions_source="youtube_auto"
+    )
+    result = fetcher.fetch("v-1")
+    assert result.transcript_path == vtt_path
+    assert result.captions_source == "youtube_auto"
+    assert result.transcript_sha256 == _sha256_text(vtt_path.read_text())
+
+
+def test_local_fetcher_paths_dict_beats_root_when_both_set(tmp_path):
+    """paths takes precedence over root for matching video_ids; root remains
+    the fallback for ids not in paths. Keeps fixture-style tests working
+    while real ingest can pass an explicit map."""
+    specific_dir = tmp_path / "specific"
+    fallback_dir = tmp_path / "fallback"
+    specific_dir.mkdir()
+    fallback_dir.mkdir()
+
+    specific_path = specific_dir / "weirdly-named.vtt"
+    specific_path.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nspecific cue\n",
+        encoding="utf-8",
+    )
+    fallback_path = fallback_dir / "v-2.vtt"
+    fallback_path.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nfallback cue\n",
+        encoding="utf-8",
+    )
+
+    fetcher = LocalFsFetcher(
+        paths={"v-1": specific_path},
+        root=fallback_dir,
+    )
+
+    hit = fetcher.fetch("v-1")
+    assert hit.transcript_path == specific_path
+
+    miss = fetcher.fetch("v-2")
+    assert miss.transcript_path == fallback_path
+
+
+def test_paths_from_talks_yaml_returns_absolute_paths_for_ai_engineering_v0():
+    """Integration: verify the helper reads the real corpus and returns
+    absolute paths that match the staged transcripts on disk."""
+    corpus_dir = Path("eval/corpora/ai_engineering_v0")
+    paths = paths_from_talks_yaml(corpus_dir)
+
+    assert "W_CYk2ogcDI" in paths
+    target = paths["W_CYk2ogcDI"]
+    assert target.is_absolute()
+    assert str(target).endswith(
+        "transcripts/ai_engineering_v0/W_CYk2ogcDI.en.vtt"
+    )
+    assert target.exists()

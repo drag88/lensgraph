@@ -1,4 +1,4 @@
-.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean db-up db-down db-build db-verify-ext db-migrate db-reset logs
+.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean db-up db-down db-build db-verify-ext db-migrate db-reset logs ingest bakeoff-prep
 
 help:
 	@echo "LensGraph make targets:"
@@ -17,6 +17,8 @@ help:
 	@echo "  db-migrate               apply pending raw-SQL migrations"
 	@echo "  db-reset                 drop volume + recreate postgres (destructive, prompts)"
 	@echo "  logs                     tail worker log ($$LENSGRAPH_LOG_PATH or default)"
+	@echo "  ingest                   ingest one video by id (VIDEO_ID=<id>) via local transcripts"
+	@echo "  bakeoff-prep             report chunks/embeds readiness per dev_gold video"
 
 install:
 	uv sync
@@ -73,3 +75,9 @@ db-reset:
 
 logs:
 	tail -f $${LENSGRAPH_LOG_PATH:-./.lensgraph/logs/workers.log}
+
+ingest:
+	uv run python -m ingest.cli $(VIDEO_ID)
+
+bakeoff-prep:
+	uv run python -m scripts.bakeoff_prep
