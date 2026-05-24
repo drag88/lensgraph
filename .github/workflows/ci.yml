@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: validate-evals + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Validate schemas + corpora + fixture self-test
+        run: make validate-evals
+
+      - name: Lint
+        run: make lint
+
+      # phase0-gate is intentionally NOT run in CI by default.
+      # It is the local gate developers run before touching ingest/, chunking/, retrieve/,
+      # generate/, api/, or web/. CI cannot enforce it without forking workflows per directory
+      # and the discipline lives in CLAUDE.md hard rule 1.

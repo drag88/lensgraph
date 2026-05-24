@@ -6,7 +6,7 @@ Multimodal video RAG over engineering conference talks. Eval-first; the eval har
 
 ## Hard rules
 
-1. **Eval before code.** Do not write or modify `ingest/`, `chunking/`, `retrieve/`, `generate/`, `api/`, or `web/` until `make validate-evals` passes against ≥10 verified gold examples. This is non-negotiable.
+1. **Eval before code.** Do not write or modify `ingest/`, `chunking/`, `retrieve/`, `generate/`, `api/`, or `web/` until `make phase0-gate` passes (≥10 verified examples + strict transcript validation). The gate is enforceable: it is `uv run python eval/validate.py --strict --min-verified 10`. Run it locally before any commit touching those directories.
 
 2. **The test set is locked.** Never modify `eval/corpora/*/test_gold.jsonl` during development. Its SHA256 in the README is a contract. If a change is genuinely required, document it as a methodology revision and reset all downstream metrics.
 
@@ -18,17 +18,19 @@ Multimodal video RAG over engineering conference talks. Eval-first; the eval har
 
 6. **One agent framework.** LangGraph only. No LangChain core, no LlamaIndex. See `docs/decisions/001-langgraph-not-llamaindex.md`.
 
-6a. **Model selection follows ADR 004 v3: candidate set + selection rule, not single-model defaults.**
+6a. **Model selection follows ADR 004 v3.1: candidate set + selection rule, not single-model defaults.** Structured candidate config lives at `eval/config/model_candidates.yaml` — that file is the source of truth for the bakeoff runner. ADR prose is for humans.
    - Generator candidates: gemma-4-31b · qwen3-235b-a22b-instruct · deepseek-v3.2 (all DeepInfra).
-   - Judge candidates: deepseek-v3.2 · qwen3-235b-a22b-instruct (must be cross-family from chosen generator).
-   - Cheap extraction candidates: gemma-4-e4b · qwen3-8b local first; fall back to chosen hosted generator.
-   - Text embeddings: BAAI/bge-m3 local first; Voyage / Gemini Embedding 2 only if BGE-M3 fails the embeddings minimum.
+   - Judge candidates: cross-family from chosen generator (gemma / qwen / deepseek).
+   - Cheap extraction: gemma-4-e4b · qwen3-8b local first; fall back to chosen hosted generator.
+   - Text embeddings: **BAAI/bge-m3 all three channels** (dense in pgvector, sparse in pgvector sparsevec, multi-vector via per-token arrays + MaxSim). Voyage / Gemini Embedding 2 only as fallbacks if BGE-M3 fails the embeddings minimum.
    - Visual retrieval: ColQwen2.5 via colpali-engine (local/Modal); Gemini Embedding 2 as single-vector baseline for the writeup only.
    - Reranker: BAAI/bge-reranker-v2-m3 local CPU.
    - ASR: WhisperX large-v3 local MPS.
-   - Premium triangulation: claude-sonnet-4-6 + gpt-5.5, one-off on test_gold for the methodology writeup.
+   - Premium triangulation: claude-sonnet-4-6 + gpt-5.5, one-off on test_gold.
 
-   **Selection rule:** within each component, pick the cheapest candidate whose eval score is within 3pp of the leader AND meets all minimums (defined in ADR 004). Do not lock a default before running the phase-2 bakeoff. Do not introduce a new model without an ADR amendment.
+   **Inference provider:** DeepInfra is primary (only host with the full candidate set). OpenRouter is optional failover. Groq is excluded until they add Gemma 4 31B / DeepSeek V3.2 / Qwen3-235B.
+
+   **Selection rule:** within each component, pick the cheapest candidate whose `dev_gold` eval score is within 3pp of the leader AND meets all minimums (defined in ADR 004). `test_gold` is reserved for the final writeup — never for selection. Do not lock a default before running the phase-2 bakeoff. Do not introduce a new model or provider without an ADR amendment.
 
 7. **`verified: true` is sacred.** Never flip `verified: true` on an example without watching the actual clip. The validator gates committed corpora on this field.
 

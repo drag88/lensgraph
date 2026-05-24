@@ -12,19 +12,26 @@ Two facts force this rewrite of v2:
 1. **The model field is moving weekly.** Gemma 4 dropped 7 weeks ago. Qwen3-235B-A22B-Instruct is listed on DeepInfra at ~$0.07/$0.10 per MTok — roughly half the price of Gemma 4 31B. DeepSeek V3.2 is in the same competitive band. Any single-model default is stale by week 6.
 2. **The right answer is the cheapest model that clears the eval.** Not the most capable. Not the most popular. The cheapest one that meets the published thresholds on the locked test set.
 
-So v3 changes the shape of the decision: **a candidate set per component, plus a formal selection rule that operates on eval output.**
+So v3 changes the shape of the decision: **a candidate set per component, plus a formal selection rule that operates on `dev_gold` eval output.**
+
+> **`dev_gold` only, never `test_gold`.** Selection is tuning. Tuning on `test_gold` invalidates every downstream metric. The locked test set runs once at the end, for the methodology writeup, after the selection rule has already chosen the winner from `dev_gold` results.
+
+The structured candidate config consumed by the bakeoff runner lives at `eval/config/model_candidates.yaml`. Prices in the prose below are illustrative; the YAML is the source of truth.
 
 ## The selection rule
 
 ```
 For component K with candidate set C_K and price() function:
 
-  scores = { c: eval_score(c) for c in C_K }
-  best   = max(scores.values())
-  qualifying = { c for c in C_K
-                 if scores[c] >= best - 0.03
-                 and meets_minimums(c, K) }
-  chosen = argmin(price(c) for c in qualifying)
+  dev_scores  = { c: dev_eval_score(c) for c in C_K }     # dev_gold ONLY
+  best        = max(dev_scores.values())
+  qualifying  = { c for c in C_K
+                  if dev_scores[c] >= best - 0.03
+                  and meets_minimums(c, K) }
+  chosen      = argmin(price(c) for c in qualifying)
+
+# test_gold runs once at the end, with `chosen` already locked.
+# Test scores go into the writeup; they do not influence selection.
 ```
 
 **Tie-break tolerance: 3 percentage points** below the leader counts as a tie. Within the tie, cheapest wins.
@@ -48,11 +55,19 @@ A candidate that fails any minimum is disqualified regardless of score.
 | **Planner / generator** | `gemma-4-31b` (DeepInfra) · `qwen3-235b-a22b-instruct` (DeepInfra) · `deepseek-v3.2` (DeepInfra) | Top three open-weight contenders for agentic tool use as of May 2026. All have native function calling and structured JSON. Wide price spread (5×) makes the selection rule meaningful. |
 | **Cheap extraction** | `gemma-4-e4b` (local MPS) · `qwen3-8b` (local MPS) · DeepInfra fallback to whatever-won-generator | Local first to keep cost at zero. Falls back to chosen hosted generator if local can't hit JSON-parse minimum. |
 | **LLM judge** | `deepseek-v3.2` (DeepInfra) · `qwen3-235b-a22b-instruct` (DeepInfra) · spot-check passes via `claude-sonnet-4-6` and `gpt-5.5` | Must be cross-family from chosen generator (anti-preference-leakage, ICLR 2026). If generator is Gemma → judge is Qwen or DeepSeek. If generator is Qwen → judge is DeepSeek or Gemma. Frontier APIs reserved for occasional triangulation. |
-| **Text embeddings** | `BAAI/bge-m3` (local) · `voyage-3-large` (API) · `gemini-embedding-2` (API) | Local BGE-M3 first — dense+sparse+multi-vector in one model, no per-call cost. Upgrade to Voyage or Gemini only if eval shows BGE-M3 underperforming. Embeddings are one-time, so keeping infra simple wins. |
+| **Text embeddings** | `BAAI/bge-m3` **all three channels** (dense + sparse + multi-vector, local) · `voyage-3-large` (API fallback) · `gemini-embedding-2` (API fallback) | Local BGE-M3 in v1, using all three output channels: **dense** vectors in `pgvector` (HNSW), **sparse** vectors in `pgvector` `sparsevec` type (HNSW, requires pgvector ≥ 0.7), **multi-vector** stored as per-token arrays with MaxSim aggregation in app code. Fused via Reciprocal Rank Fusion alongside BM25 and ColQwen2.5 for a 5-channel retrieval stack. Voyage or Gemini only as drop-in fallbacks if BGE-M3 fails the embeddings minimum. |
 | **Visual document retrieval** | `ColQwen2.5` via `colpali-engine` (local MPS / Modal) · `gemini-embedding-2` as single-vector baseline | ColQwen2.5 is current ViDoRe V2 leader and the portfolio-credible choice (late-interaction is a real engineering story). Gemini Embedding 2 retained as a single-vector baseline for the writeup. |
 | **Reranker** | `BAAI/bge-reranker-v2-m3` (local CPU) · hosted alternative if local latency > 80ms p95 | Local default; only swap if the latency budget breaks. |
 | **ASR** | `WhisperX large-v3` (local MPS) | No real contender for offline batch ASR on Mac. |
 | **Premium triangulation** (one-off on test_gold for the writeup) | `claude-sonnet-4-6` · `gpt-5.5` | Run once at the end. Costs ~$3 each. Lets the methodology report frontier-API numbers alongside the chosen open-weight stack. |
+
+## Inference provider choice (DeepInfra vs OpenRouter vs Groq)
+
+**Primary: DeepInfra.** Only provider hosting *all three* generator candidates (Gemma 4 31B, Qwen3-235B-A22B-Instruct, DeepSeek V3.2) AND all three judge candidates at competitive prices. Direct billing, no aggregator markup.
+
+**Fallback router: OpenRouter.** Adds ~5% markup but provides unified billing and automatic failover when DeepInfra has an outage or a specific model becomes unavailable. Wire as a thin failover layer in `eval/runners/`, not the default request path.
+
+**Excluded: Groq.** Lowest time-to-first-token in the market (LPU custom hardware) but does NOT host Gemma 4 31B, DeepSeek V3.2, or Qwen3-235B-A22B-Instruct as of 2026-05-24 — only the smaller Qwen3 32B. Reconsider if Groq adds the candidate set. LensGraph is batch-eval-heavy in phase 2, not latency-bound, so Groq's TTFT advantage is wasted on us until phase 4's live demo — at which point a Groq-served fallback for the live demo only is a reasonable v2 amendment.
 
 ## DeepInfra pricing (verified May 2026)
 
@@ -65,15 +80,19 @@ A candidate that fails any minimum is disqualified regardless of score.
 
 The price spread between Qwen3 and Gemma is ~3×. Between Qwen3 and Sonnet is ~150×. This is why the selection rule matters: if Qwen3 lands within 3pp of Gemma on the eval, the project saves ~3× on every generation call.
 
-## The bakeoff (roadmap phase 2, week 6)
+## The bakeoffs (roadmap phase 2)
 
-1. Pin all retrieval/rerank/judge variables. Vary only the generator candidate.
-2. Run the full dev_gold eval against each candidate. Log per-example traces in Langfuse with `candidate=<name>`, `git_sha`, and `judge=<name>`.
-3. Run the judge calibration audit (20 manual boundary scores) for each judge candidate. Pick the cheapest judge that hits kappa ≥ 0.60.
-4. Apply the selection rule. Publish the table in `eval/reports/<date>_generator_bakeoff/methodology.mdx`.
-5. Lock the winner into `pyproject.toml` config. Document the runner-up and the cost differential so the writeup can show what the project saved by running the bakeoff.
+Three sequential bakeoffs, all on `dev_gold`, each pinning everything except the variable under test:
 
-Estimated bakeoff cost: **under $2 total** (3 generators × 80 dev examples + judge passes). Cheaper than one round of manual prompt-tuning at frontier-API prices.
+**Bakeoff 1 — Embeddings (week 5).** TimestampRecall@5 on the vector retrieval channel only (no rerank, no generation). Cheapest BGE-M3 / Voyage / Gemini Embedding 2 candidate that hits the embeddings minimum wins.
+
+**Bakeoff 2 — Generator + judge (week 6).** Requires the thin generation harness shipped earlier in week 5 (see roadmap phase 2 — a stripped-down "query + retrieved chunks → answer + citations + parse_ok" function in `eval/runners/minimal_generation.py`, not the full LangGraph loop). Vary generator across Gemma / Qwen / DeepSeek; for each, run the judge candidates that are cross-family from it. Pick judge first (cheapest hitting kappa ≥ 0.60), then pick generator with the locked judge using the selection rule.
+
+**Bakeoff 3 — Chunking (weeks 7–8).** All five chunking strategies with the locked embeddings, locked generator, locked judge. Publish `eval/reports/<date>_chunking_ablation/methodology.mdx`.
+
+Each bakeoff publishes its own MDX with the candidate table, per-minimum check, eval scores, prices, and the selection-rule application. Runner-up and cost differential are part of the writeup, not footnotes.
+
+Estimated total bakeoff cost: **under $5** (3 generators × 80 dev examples + judge calibration + embedding runs). Cheaper than one round of manual prompt-tuning at frontier-API prices.
 
 ## Cost ceiling (12-week budget, revised)
 
@@ -114,6 +133,8 @@ Adding more candidates costs almost nothing in bakeoff dollars but a lot in cogn
 - DeepInfra raises Qwen3 or Gemma pricing materially → re-shop (Together, Fireworks, Cerebras, Groq).
 
 ## Changelog
+
+**2026-05-24 (v3.1):** Clarifications after second review. Selection runs on `dev_gold` only; `test_gold` reserved for the final writeup. **BGE-M3 promoted to all-three-channels in v1** (dense in pgvector, sparse in pgvector sparsevec, multi-vector via per-token arrays + MaxSim) — fused via RRF alongside BM25 and ColQwen2.5 for a 5-channel stack. Bakeoffs sequenced: embeddings (week 5) → generator+judge (week 6, requires thin `eval/runners/minimal_generation.py` harness, NOT the full LangGraph loop) → chunking (weeks 7–8). Structured candidate config moved to `eval/config/model_candidates.yaml` (this prose is illustrative; YAML is source of truth).
 
 **2026-05-24 (v3):** Replaced single-model default with candidate-set + selection-rule. Added Qwen3-235B-A22B-Instruct as primary candidate (~3× cheaper than Gemma on DeepInfra). Switched embeddings primary to local BGE-M3 (was: Voyage). Added explicit per-component minimums and 3pp tie-break tolerance. Added bakeoff as a phase-2 roadmap deliverable. Estimated 12-week spend now bounded $18–$33.
 

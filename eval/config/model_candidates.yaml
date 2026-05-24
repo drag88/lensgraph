@@ -1,0 +1,205 @@
+# Model candidates for the phase-2 bakeoffs.
+# Consumed by eval/runners/run_bakeoff.py (v1).
+#
+# Prices updated via the changelog in docs/decisions/004-model-selection.md.
+# Re-verify against provider pricing pages before each bakeoff run.
+
+last_updated: "2026-05-24"
+prices_checked_at: "2026-05-24"
+sources:
+  deepinfra: "https://deepinfra.com/pricing"
+  openrouter: "https://openrouter.ai/models"
+  anthropic: "https://www.anthropic.com/pricing"
+  openai: "https://openai.com/api/pricing/"
+  voyage: "https://docs.voyageai.com/docs/pricing"
+
+# Inference provider policy (see ADR 004 v3.1):
+# - Primary: DeepInfra. Only provider hosting all three generator candidates AND all three
+#   judge candidates at competitive prices.
+# - Fallback router: OpenRouter. Unified billing + automatic failover; ~5% markup over going
+#   direct. Wire when DeepInfra has an outage or a specific model becomes unavailable.
+# - Excluded: Groq. Lowest TTFT but does NOT host Gemma 4 31B, DeepSeek V3.2, or
+#   Qwen3-235B-A22B-Instruct (only the smaller Qwen3 32B). Reconsider if their lineup
+#   adds the candidate set.
+inference_providers:
+  primary: deepinfra
+  fallback_router: openrouter
+  excluded:
+    - provider: groq
+      reason: "Does not host Gemma 4 31B, DeepSeek V3.2, or Qwen3-235B-A22B-Instruct as of 2026-05-24."
+
+# Selection rule (see ADR 004): cheapest candidate whose dev_gold score is
+# within 3pp of the leader AND meets every per-component minimum.
+selection_rule:
+  tie_break_pp: 3
+  dev_set: "eval/corpora/ai_engineering_v0/dev_gold.jsonl"
+  test_set_for_writeup_only: "eval/corpora/ai_engineering_v0/test_gold.jsonl"
+
+candidates:
+
+  generator:
+    minimums:
+      claims_supported_min: 0.85
+      citation_accuracy_min: 0.85
+      json_parse_success_min: 0.98
+      corpus_negative_refusal_min: 0.90
+      p95_latency_sec_max: 2.0
+    options:
+      - id: gemma-4-31b
+        provider: deepinfra
+        provider_model_id: "google/gemma-4-31B-it"
+        price_input_per_mtok_usd: 0.13
+        price_output_per_mtok_usd: 0.38
+        license: apache-2.0
+        family: google-gemma
+        notes: "Top-3 open model on Arena. 86.4% tau2-bench Retail agentic."
+      - id: qwen3-235b-a22b-instruct
+        provider: deepinfra
+        provider_model_id: "Qwen/Qwen3-235B-A22B-Instruct"
+        price_input_per_mtok_usd: 0.071
+        price_output_per_mtok_usd: 0.10
+        license: apache-2.0
+        family: alibaba-qwen
+        notes: "Cheapest generator candidate; ~3x cheaper than Gemma."
+      - id: deepseek-v3.2
+        provider: deepinfra
+        provider_model_id: "deepseek-ai/DeepSeek-V3.2"
+        price_input_per_mtok_usd: 0.32
+        price_output_per_mtok_usd: 0.89
+        license: mit
+        family: deepseek
+        notes: "Strongest open reasoning model in the set."
+
+  judge:
+    minimums:
+      cohens_kappa_vs_human_min: 0.60
+      cross_family_required: true   # judge.family != generator.family
+    options:
+      - id: deepseek-v3.2
+        provider: deepinfra
+        provider_model_id: "deepseek-ai/DeepSeek-V3.2"
+        price_input_per_mtok_usd: 0.32
+        price_output_per_mtok_usd: 0.89
+        family: deepseek
+      - id: qwen3-235b-a22b-instruct
+        provider: deepinfra
+        provider_model_id: "Qwen/Qwen3-235B-A22B-Instruct"
+        price_input_per_mtok_usd: 0.071
+        price_output_per_mtok_usd: 0.10
+        family: alibaba-qwen
+      - id: gemma-4-31b
+        provider: deepinfra
+        provider_model_id: "google/gemma-4-31B-it"
+        price_input_per_mtok_usd: 0.13
+        price_output_per_mtok_usd: 0.38
+        family: google-gemma
+
+  cheap_extraction:
+    minimums:
+      json_parse_success_min: 0.98
+      topic_boundary_iou_min: 0.70
+    options:
+      - id: gemma-4-e4b
+        provider: local
+        provider_model_id: "google/gemma-4-e4b-it"
+        price_input_per_mtok_usd: 0.0
+        price_output_per_mtok_usd: 0.0
+        hardware: mac-mps
+        family: google-gemma
+      - id: qwen3-8b
+        provider: local
+        provider_model_id: "Qwen/Qwen3-8B-Instruct"
+        price_input_per_mtok_usd: 0.0
+        price_output_per_mtok_usd: 0.0
+        hardware: mac-mps
+        family: alibaba-qwen
+      - id: fallback-to-chosen-generator
+        provider: deepinfra
+        provider_model_id: "see generator winner"
+        family: inherits
+
+  text_embeddings:
+    minimums:
+      timestamp_recall_at_5_vector_only_min: 0.75
+    storage_backend: pgvector
+    fusion: reciprocal_rank_fusion   # BGE-M3 dense ⊕ sparse ⊕ multi-vector ⊕ BM25 ⊕ ColQwen2.5
+    options:
+      - id: bge-m3-all-channels
+        provider: local
+        provider_model_id: "BAAI/bge-m3"
+        price_per_mtok_usd: 0.0
+        hardware: mac-mps-or-cpu
+        family: bge
+        channels: [dense, sparse, multi_vector]
+        storage:
+          dense: "pgvector HNSW (1024-dim)"
+          sparse: "pgvector sparsevec HNSW (requires pgvector >= 0.7)"
+          multi_vector: "per-token vectors as array column; MaxSim aggregation in app code"
+        notes: "v1 uses all three channels. RRF-fused with BM25 and ColQwen2.5."
+      - id: voyage-3-large
+        provider: voyage
+        provider_model_id: "voyage-3-large"
+        price_per_mtok_usd: 0.18
+        family: voyage
+        channels: [dense]
+        notes: "Fallback if bge-m3 fails the embeddings minimum. Dense only."
+      - id: gemini-embedding-2
+        provider: google
+        provider_model_id: "gemini-embedding-2"
+        price_per_mtok_usd: 0.15
+        family: google-gemini
+        channels: [dense]
+        notes: "Fallback. Also serves as a single-vector baseline for the visual-retrieval writeup."
+
+  visual_retrieval:
+    options:
+      - id: colqwen2.5
+        provider: local
+        provider_model_id: "vidore/colqwen2.5"
+        price_per_mtok_usd: 0.0
+        hardware: mac-mps-or-modal
+        family: colpali
+        notes: "Primary. Modal bursts for full-corpus ingest."
+      - id: gemini-embedding-2-singlevec
+        provider: google
+        provider_model_id: "gemini-embedding-2"
+        price_per_mtok_usd: 0.15
+        family: google-gemini
+        notes: "Single-vector multimodal baseline for writeup only."
+
+  reranker:
+    minimums:
+      recall_at_3_lift_pp_min: 5.0
+      p95_latency_ms_max: 80
+    options:
+      - id: bge-reranker-v2-m3
+        provider: local
+        provider_model_id: "BAAI/bge-reranker-v2-m3"
+        price_per_mtok_usd: 0.0
+        hardware: cpu
+        family: bge
+
+  asr:
+    options:
+      - id: whisperx-large-v3
+        provider: local
+        provider_model_id: "openai/whisper-large-v3"
+        price_per_mtok_usd: 0.0
+        hardware: mac-mps
+        family: whisper
+
+  premium_triangulation:
+    # Used once on test_gold for the methodology writeup. Not selected via the rule.
+    options:
+      - id: claude-sonnet-4-6
+        provider: anthropic
+        provider_model_id: "claude-sonnet-4-6"
+        price_input_per_mtok_usd: 3.00
+        price_output_per_mtok_usd: 15.00
+        family: anthropic
+      - id: gpt-5.5
+        provider: openai
+        provider_model_id: "gpt-5.5"
+        price_input_per_mtok_usd: null    # re-verify at run time
+        price_output_per_mtok_usd: null
+        family: openai

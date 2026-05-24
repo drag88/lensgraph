@@ -6,11 +6,15 @@ Multimodal video RAG over engineering conference talks. Ask a natural-language q
 
 ## The thesis
 
-Most portfolio AI projects are RAG chatbots over PDFs. LensGraph is multimodal, agentic, and rigorously evaluated. The centerpiece artifact is not the demo — it is the **chunking ablation report** comparing five chunking strategies on a hand-curated gold set, with claim-level faithfulness scoring and judge-human agreement.
+Most portfolio AI projects are RAG chatbots over PDFs. LensGraph is multimodal, agentic, and rigorously evaluated. The centerpiece artifacts are not the demo — they are the **two methodology reports**:
 
-The story on the resume is:
+1. The **generator + judge bakeoff** that applies the ADR 004 selection rule across Gemma 4 31B / Qwen3-235B / DeepSeek V3.2 on a hand-curated gold set, with a cross-family LLM-judge calibration audit (Cohen's kappa vs human).
+2. The **chunking ablation** comparing five chunking strategies under the locked generator + judge, with claim-level faithfulness and citation accuracy.
 
-> "Built a multimodal video RAG system over 500+ hours of public conference talks. Evaluated five video chunking strategies on a hand-curated gold set; the hybrid (slide-boundary + topic-LLM fallback) strategy lifted top-3 timestamp recall from 71% → 89% and reduced hallucinated answers from 13% → 4% via verifier-gated retrieval."
+The resume line is currently a **target**, replaced with measured numbers only after the phase-4 locked-test-set run:
+
+> **[TARGET — replaced with measured numbers in phase 4, week 12]**
+> "Built a multimodal video RAG system over 500+ hours of public conference talks. Selected the generator via a 3-candidate bakeoff (Gemma 4 31B / Qwen3-235B / DeepSeek V3.2) using a published selection rule; chosen model achieved ClaimsSupported ≥ 0.85 at ~30× lower cost than frontier APIs. Evaluated five chunking strategies; hybrid (slide-boundary + topic-LLM fallback) targets top-3 timestamp recall lift of 71% → 89% and hallucination reduction of 13% → 4%."
 
 ## What is here today
 
@@ -20,10 +24,12 @@ The story on the resume is:
 - `docs/roadmap.md` — 12-week build plan
 - `docs/decisions/` — architecture decision records (LangGraph, Postgres-only, corpus, model selection)
 - `eval/schemas/` — three executable JSON Schemas (talk, gold example, boundary audit)
+- `eval/config/model_candidates.yaml` — structured candidate config consumed by the bakeoff runner
 - `eval/corpora/ai_engineering_v0/` — corpus directory, currently empty but schema-valid
 - `eval/curation/playbook.md` — how to build the gold set in 5 working days
-- `eval/validate.py` — schema validator with self-test fixtures
+- `eval/validate.py` — schema validator with self-test fixtures and phase-0 gate
 - `eval/tests/fixtures/` — valid + invalid examples that prove the schema conditionals work
+- `.github/workflows/ci.yml` — CI runs `make validate-evals` + `make lint` on every push/PR
 
 ## What is intentionally not here yet
 
@@ -36,6 +42,8 @@ uv sync
 make validate-evals            # schemas + corpora + fixture self-test (CI gate)
 make validate-evals-strict     # also fails on missing transcript files (commit gate)
 make validate-self-test        # only run fixture self-test (fast schema iteration)
+make phase0-gate               # fails unless >= 10 verified examples + strict checks pass
+                               # run before touching ingest/, chunking/, retrieve/, generate/, api/, web/
 ```
 
 ## License

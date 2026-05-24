@@ -14,6 +14,9 @@ __pycache__/
 transcripts/*
 !transcripts/.gitkeep
 
+# Draft eval examples — work in progress, not yet verified, must never reach the corpus
+eval/corpora/**/*.draft.jsonl
+
 # Eval reports — keep methodology, keep small report JSON, ignore raw traces
 eval/reports/**/raw/
 eval/reports/**/traces/

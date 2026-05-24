@@ -34,6 +34,7 @@ FIXTURES_DIR = EVAL_ROOT / "tests" / "fixtures"
 PROJECT_ROOT = EVAL_ROOT.parent
 
 GOLD_FILES = ["dev_gold.jsonl", "test_gold.jsonl", "negative.jsonl", "synthesis.jsonl"]
+PHASE0_MIN_VERIFIED = 10  # CLAUDE.md hard rule 1: no implementation code below this
 
 
 def load_validator(name: str) -> Draft202012Validator:
@@ -51,6 +52,24 @@ def iter_jsonl(path: Path):
             yield i, json.loads(line)
         except json.JSONDecodeError as exc:
             yield i, exc
+
+
+def count_verified_examples() -> int:
+    """Count verified examples committed across all corpora gold/negative/synthesis files."""
+    n = 0
+    if not CORPORA_DIR.exists():
+        return 0
+    for corpus_dir in sorted(CORPORA_DIR.iterdir()):
+        if not corpus_dir.is_dir():
+            continue
+        for jsonl_name in GOLD_FILES:
+            f = corpus_dir / jsonl_name
+            if not f.exists():
+                continue
+            for _, parsed in iter_jsonl(f):
+                if isinstance(parsed, dict) and parsed.get("verified") is True:
+                    n += 1
+    return n
 
 
 def sha256_file(path: Path) -> str:
@@ -277,6 +296,16 @@ def main() -> int:
         action="store_true",
         help="Fail on missing transcript files (commit gate). Default is warn-only for CI.",
     )
+    parser.add_argument(
+        "--min-verified",
+        type=int,
+        default=0,
+        help=(
+            "Phase-0 gate: fail unless the corpus contains at least N verified examples "
+            "across all gold/negative/synthesis files. Use 0 to skip the gate. "
+            "make phase0-gate calls this with the project default (10)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.self_test:
@@ -284,7 +313,19 @@ def main() -> int:
 
     rc_corpora = validate_corpora(strict=args.strict)
     rc_self = run_self_test()
-    return rc_corpora or rc_self
+    rc_gate = 0
+    if args.min_verified > 0:
+        n = count_verified_examples()
+        if n < args.min_verified:
+            print(
+                f"\nPHASE-0 GATE FAIL: {n} verified examples < required {args.min_verified}. "
+                "Implementation code (ingest/, chunking/, retrieve/, generate/, api/, web/) "
+                "must not be modified until this gate passes. See CLAUDE.md hard rule 1."
+            )
+            rc_gate = 1
+        else:
+            print(f"PHASE-0 GATE OK: {n} verified examples (>= {args.min_verified})")
+    return rc_corpora or rc_self or rc_gate
 
 
 if __name__ == "__main__":

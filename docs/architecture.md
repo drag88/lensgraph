@@ -2,7 +2,7 @@
 
 ## One-line summary
 
-Postgres + pgvector as the single source of truth, LangGraph as the agent loop, ColPali for visual document retrieval over slide frames, BM25 + vector + reranker as the three-stage retrieval stack, Langfuse for observability, Next.js + FastAPI as the surface.
+Postgres + pgvector (incl. sparsevec) as the single source of truth, LangGraph as the agent loop, ColQwen2.5 for visual document retrieval over slide frames, **5-channel retrieval fused via RRF** (BM25 ⊕ BGE-M3 dense ⊕ BGE-M3 sparse ⊕ BGE-M3 multi-vector ⊕ ColQwen2.5 visual), reranked by BGE-reranker-v2-m3, Langfuse for observability, Next.js + FastAPI as the surface.
 
 ## Layered view
 
@@ -19,8 +19,13 @@ Postgres + pgvector as the single source of truth, LangGraph as the agent loop, 
 │   loops: Verify can re-enter Retrieve with refined query            │
 ├─────────────────────────────────────────────────────────────────────┤
 │ retrieve/                                                            │
-│   BM25 (tantivy via Postgres FTS) ⊕ pgvector (HNSW)                 │
-│   reranker: BGE-reranker-v2-m3 or Voyage rerank-2                   │
+│   5-channel fusion via RRF:                                          │
+│     BM25 (Postgres FTS)                                              │
+│     BGE-M3 dense  (pgvector HNSW, 1024-dim)                          │
+│     BGE-M3 sparse (pgvector sparsevec HNSW)                          │
+│     BGE-M3 multi-vector (per-token arrays, MaxSim in app)            │
+│     ColQwen2.5 visual (late-interaction over slide patches)          │
+│   reranker: BGE-reranker-v2-m3 (local CPU)                           │
 ├─────────────────────────────────────────────────────────────────────┤
 │ chunking/                                                            │
 │   fixed_window | transcript_segment | slide_boundary | topic_llm    │
@@ -55,7 +60,7 @@ Postgres + pgvector as the single source of truth, LangGraph as the agent loop, 
 
 1. User sends `{question, corpus_id}` to `POST /query`.
 2. LangGraph `Plan` node decomposes the question (extract entities, decide if single-clip or synthesis).
-3. `Retrieve` node fans out: BM25 over transcripts + pgvector over text embeds + ColPali over frame embeds. Top-k = 30 per channel.
+3. `Retrieve` node fans out across 5 channels: BM25, BGE-M3 dense (pgvector), BGE-M3 sparse (pgvector sparsevec), BGE-M3 multi-vector (MaxSim over per-token arrays), and ColQwen2.5 over frame patches. Top-k = 30 per channel; RRF fuses the unions.
 4. `Rerank` collapses the union to top-8 via cross-encoder.
 5. `Verify` node checks whether the top-8 actually contain the answer. If confidence < threshold and not yet retried, edit query and loop back to Retrieve.
 6. `Generate` produces an answer constrained to the retrieved spans.
