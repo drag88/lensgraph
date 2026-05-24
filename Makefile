@@ -68,7 +68,7 @@ db-reset:
 	docker compose up -d postgres
 	@echo "Waiting for postgres to become healthy..."
 	@until docker compose exec -T postgres pg_isready -U lensgraph -d lensgraph >/dev/null 2>&1; do sleep 1; done
-	$(MAKE) db-migrate
+	POSTGRES_DSN="postgresql://lensgraph:lensgraph@localhost:5432/lensgraph" $(MAKE) db-migrate
 	@echo "db-reset: complete — migrations applied"
 
 logs:
