@@ -28,6 +28,7 @@ from db.repos import talks as talks_repo
 from db.repos.talks import Talk
 from ingest import pipeline
 from ingest.fetch import LocalFsFetcher
+from ingest.quality import probe
 from queues import pgmq_client
 
 pytestmark = pytest.mark.slow
@@ -297,3 +298,62 @@ def test_re_running_reconcile_overwrites_talks_row(conn, transcript_dir):
     fetched = talks_repo.get(conn, "good-vid")
     assert fetched is not None
     assert fetched.title == "Revised"
+
+
+# -- quality probe regression ---------------------------------------------
+
+
+def test_quality_fails_on_timestamp_only_vtt(tmp_path):
+    """A VTT with only a header + timestamp line and zero cue text must
+    fail quality. Counting timestamp digits as 'words' is the old bug."""
+    vtt = "WEBVTT\n\n00:00:00.000 --> 00:01:00.000\n"
+    path = tmp_path / "timestamp-only.vtt"
+    path.write_text(vtt, encoding="utf-8")
+    result = probe(path, duration_sec=60.0)
+    assert result.passes is False
+    assert result.details["cue_line_count"] == 0
+    assert result.details["word_count"] == 0
+
+
+def test_quality_fails_on_sparse_cues(tmp_path):
+    """60s VTT with two single-word cues = real WPM 2. The fix must
+    ignore timestamp lines so wpm reflects spoken content only."""
+    vtt = (
+        "WEBVTT\n"
+        "Kind: captions\n"
+        "Language: en\n"
+        "\n"
+        "00:00:00.000 --> 00:00:30.000 align:start position:0%\n"
+        "hello\n"
+        "\n"
+        "00:00:30.000 --> 00:01:00.000 align:start position:0%\n"
+        "world\n"
+    )
+    path = tmp_path / "sparse.vtt"
+    path.write_text(vtt, encoding="utf-8")
+    result = probe(path, duration_sec=60.0)
+    assert result.passes is False
+    assert result.details["cue_line_count"] == 2
+    assert result.details["word_count"] == 2
+    assert result.details["wpm"] == pytest.approx(2.0)
+
+
+def test_quality_fails_on_placeholder_heavy_cues(tmp_path):
+    """Two cue lines, both non-speech markers => non_speech_ratio = 1.0
+    over cue lines (header/timestamp lines must NOT dilute it)."""
+    vtt = (
+        "WEBVTT\n"
+        "\n"
+        "00:00:00.000 --> 00:00:30.000\n"
+        "[Music]\n"
+        "\n"
+        "00:00:30.000 --> 00:01:00.000\n"
+        "[Applause]\n"
+    )
+    path = tmp_path / "placeholders.vtt"
+    path.write_text(vtt, encoding="utf-8")
+    result = probe(path, duration_sec=60.0)
+    assert result.passes is False
+    assert result.details["cue_line_count"] == 2
+    assert result.details["non_speech_lines"] == 2
+    assert result.details["non_speech_ratio"] == pytest.approx(1.0)
