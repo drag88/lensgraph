@@ -18,7 +18,7 @@ Multimodal video RAG over engineering conference talks. Eval-first; the eval har
 
 6. **One agent framework.** LangGraph only. No LangChain core, no LlamaIndex. See `docs/decisions/001-langgraph-not-llamaindex.md`.
 
-6a. **Model selection follows ADR 004.** Claude Sonnet 4.6 for generation/planning, Claude Haiku 4.5 for cheap extraction, OpenAI flagship as cross-family judge, Voyage-3-large for text embeddings, ColQwen2 (local/Modal) for visual document retrieval, WhisperX local for ASR, BGE-reranker-v2-m3 local for reranking. Do not introduce a new model without an ADR amendment.
+6a. **Model selection follows ADR 004 (revised 2026-05-24 for open-weight default).** Gemma 4 31B on DeepInfra for generation/planning; Gemma 4 E4B local (Mac MPS) for cheap extraction; DeepSeek-V3 on DeepInfra as cross-family judge (anti-preference-leakage per ICLR 2026); Voyage-3-large for text embeddings; ColQwen2.5 (local/Modal) for visual document retrieval; WhisperX local for ASR; BGE-reranker-v2-m3 local for reranking. Claude Sonnet 4.6 is the one-off premium triangulation model only. Do not introduce a new model without an ADR amendment.
 
 7. **`verified: true` is sacred.** Never flip `verified: true` on an example without watching the actual clip. The validator gates committed corpora on this field.
 
