@@ -32,6 +32,21 @@ from queues import pgmq_client
 Handler = Callable[[psycopg.Connection, dict[str, Any]], None]
 
 
+class WorkerCompletionFailedError(RuntimeError):
+    """mark_completed returned False — the status row was not in_progress
+    when the worker tried to mark it complete. Caller's transaction MUST
+    roll back so the message redelivers; quietly archiving here would leave
+    the system in a "work done but never recorded" state."""
+
+
+class WorkerArchiveFailedError(RuntimeError):
+    """pgmq_client.archive returned False — the message was not in a state
+    we could ack (already archived, already deleted, or invalid msg_id).
+    Raise so the surrounding transaction rolls back. Committing a status
+    transition while the message stays visible would cause the next worker
+    to re-run the work for an already-completed row."""
+
+
 def process_one(
     conn: psycopg.Connection,
     queue: str,
@@ -45,6 +60,12 @@ def process_one(
     Caller is responsible for wrapping the call in a transaction. The four
     DB writes (claim, handler-side effects, mark_completed, archive) must
     commit atomically with the read so a handler crash re-delivers the job.
+
+    Hard contract: if mark_completed or archive returns False, this raises
+    rather than silently archiving / silently leaving the message visible.
+    Both conditions indicate the worker's preconditions were violated
+    (status row mutated mid-handler, message already archived elsewhere) —
+    rolling back the transaction is the only correct response.
     """
     messages = pgmq_client.read(conn, queue, vt=vt, qty=1)
     if not messages:
@@ -57,11 +78,22 @@ def process_one(
 
     claim = iss.claim_for_update(conn, video_id, step, entity_id=entity_id)
     if claim.status in ("completed", "skipped"):
-        # Already done. Ack the redelivery / duplicate and exit.
-        pgmq_client.archive(conn, queue, msg.msg_id)
+        if not pgmq_client.archive(conn, queue, msg.msg_id):
+            raise WorkerArchiveFailedError(
+                f"archive returned False for already-{claim.status} "
+                f"msg_id={msg.msg_id} on queue {queue!r}"
+            )
         return True
 
     handler(conn, payload)
-    iss.mark_completed(conn, video_id, step, entity_id=entity_id)
-    pgmq_client.archive(conn, queue, msg.msg_id)
+    if not iss.mark_completed(conn, video_id, step, entity_id=entity_id):
+        raise WorkerCompletionFailedError(
+            f"mark_completed returned False for video_id={video_id!r} "
+            f"step={step!r} entity_id={entity_id}: row was not in_progress"
+        )
+    if not pgmq_client.archive(conn, queue, msg.msg_id):
+        raise WorkerArchiveFailedError(
+            f"archive returned False after handler for msg_id={msg.msg_id} "
+            f"on queue {queue!r}"
+        )
     return True

@@ -240,3 +240,83 @@ def test_process_one_uses_exact_row_claim(conn):
     ).fetchone()
     assert a_row == ("pending", 0)
     assert b_row == ("completed", 1)
+
+
+# -- worker contract: failure-mode rollbacks ------------------------------
+
+
+def test_process_one_raises_when_mark_completed_returns_false(conn):
+    """If the handler sabotages the status row (e.g. an upstream code path
+    flips status away from in_progress), mark_completed returns False.
+    process_one MUST raise so the surrounding transaction rolls back —
+    silently archiving would commit "work done but never recorded".
+    """
+    _seed(conn, "saboteur-vid")
+
+    def saboteur_handler(c, p):
+        # Externally flip the row out of in_progress while still in the txn.
+        iss.upsert(c, "saboteur-vid", step="fetch", status="failed")
+
+    with pytest.raises(workers.WorkerCompletionFailedError):
+        with conn.transaction():
+            workers.process_one(conn, QUEUE, saboteur_handler)
+
+    # Transaction rolled back: status back to pre-claim, message visible again.
+    row = conn.execute(
+        "SELECT status, attempts FROM ingest_step_status "
+        "WHERE video_id='saboteur-vid' AND step='fetch'"
+    ).fetchone()
+    assert row == ("pending", 0)
+    msgs = pgmq_client.read(conn, QUEUE, vt=30, qty=1)
+    assert len(msgs) == 1
+    assert msgs[0].message["video_id"] == "saboteur-vid"
+
+
+def test_process_one_raises_when_archive_returns_false(conn, monkeypatch):
+    """If archive reports the message did not archive, process_one MUST
+    raise. Committing the status transition while the message stays visible
+    would cause double-work on the next dequeue."""
+    _seed(conn, "archive-fail-vid")
+
+    def handler(c, p):
+        pass
+
+    # Force archive to report failure for this test only.
+    monkeypatch.setattr(pgmq_client, "archive", lambda c, q, mid: False)
+
+    with pytest.raises(workers.WorkerArchiveFailedError):
+        with conn.transaction():
+            workers.process_one(conn, QUEUE, handler)
+
+    # Transaction rolled back: status back to pending, message visible again.
+    row = conn.execute(
+        "SELECT status, attempts FROM ingest_step_status "
+        "WHERE video_id='archive-fail-vid' AND step='fetch'"
+    ).fetchone()
+    assert row == ("pending", 0)
+    msgs = pgmq_client.read(conn, QUEUE, vt=30, qty=1)
+    assert len(msgs) == 1
+
+
+def test_process_one_already_completed_branch_raises_on_archive_failure(
+    conn, monkeypatch
+):
+    """The already-completed / skipped branch also has to honour the archive
+    contract — silently swallowing a failed archive there would leave a
+    completed row plus a visible message, causing redelivery forever."""
+    _seed(conn, "completed-archive-fail")
+    iss.upsert(conn, "completed-archive-fail", step="fetch", status="completed")
+
+    def handler(c, p):
+        pass  # never runs in this branch
+
+    monkeypatch.setattr(pgmq_client, "archive", lambda c, q, mid: False)
+
+    with pytest.raises(workers.WorkerArchiveFailedError):
+        with conn.transaction():
+            workers.process_one(conn, QUEUE, handler)
+
+    # Status was 'completed' before; rollback restored it (the saboteur upsert
+    # is inside the txn). The visible message is back.
+    msgs = pgmq_client.read(conn, QUEUE, vt=30, qty=1)
+    assert len(msgs) == 1
