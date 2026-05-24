@@ -15,33 +15,33 @@ Target: ~80 verified examples across 10–12 talks in 5 working days.
 ## Talk selection criteria, in priority order
 
 1. **Format diversity** to stress chunking: 4 slides-heavy, 3 code/screen, 2 whiteboard/live-demo, 2 conversational, 1 lightning.
-2. **Length variety:** mix 15–20 min lightning, 35–50 min standard, 60+ min keynote.
+2. **Bounded duration:** prefer 10–30 min talks and allow 35–60 min only when the topic is unusually valuable. Do not use 9–10 hour livestreams as corpus records; slice them into individual chapters first.
 3. **Speaker name recognition** when possible (helps demo legibility).
 4. **Clean audio.** Bad-mic talks add ASR noise that pollutes downstream eval. Defer them to a v1 robustness slice.
 5. **Permissive use posture.** Public YouTube uploads under standard license. Store transcripts locally; do not redistribute.
 
-### Starter shortlist (replace as you watch and judge)
+### Starter shortlist
 
-- Andrej Karpathy — *Intro to LLMs* (1h, slides-heavy)
-- Jerry Liu — recent LlamaIndex agents talk (~45m, code+slides)
-- Hamel Husain — *Your AI Product Needs Evals* (~45m, slides-heavy, on-topic)
-- A Latent Space pod episode (~60m, conversational, transcript-only stress)
-- Jason Liu — Instructor / pydantic for LLMs (~30m, code-heavy)
-- An AI Engineer Summit lightning talk (~15m)
-- Chip Huyen — recent talk (~45m, slides+narrative)
-- A Stanford CS25 lecture (~60m, academic, whiteboard + slides)
-- A Modal Labs or Replicate engineering talk (~30m, code-heavy)
-- A panel from any conference (tests multi-speaker handling)
-- NeurIPS keynote (~60m, dense)
-- One outlier — pick something off-pattern
+Use [`talks_shortlist.md`](talks_shortlist.md) as the current curation input. It contains verified direct video URLs, durations, caption probes, alternates, and candidates deferred until their ingestion path is stable.
+
+### Chapter-sliced talks
+
+For livestreams or conference recordings longer than 60 minutes, the corpus unit is the chapter, not the source video. Create a pseudo-ID, store the original source video ID and source offsets, and hash a transcript clipped to that chapter.
+
+Default limits:
+
+- Target chapter length: 10–25 minutes.
+- Hard cap for v0 recommended items: 60 minutes.
+- Long workshops over 60 minutes belong in alternates until the first curation pass proves they are worth the manual review cost.
+- Use at most 2–3 chapters from the same source livestream in v0 unless the other sources fail caption or quality checks.
 
 ## Per-talk workflow (~45 min/talk)
 
 1. **Pull the video and transcript.**
    ```bash
    yt-dlp --write-auto-subs --skip-download --sub-format vtt --sub-lang en \
-     -o "transcripts/%(id)s.%(ext)s" "<youtube_url>"
-   sha256sum transcripts/<video_id>.en.vtt
+     -o "transcripts/ai_engineering_v0/%(id)s.%(ext)s" "<youtube_url>"
+   sha256sum transcripts/<corpus_name>/<video_id>.en.vtt
    ```
    Use WhisperX only if YouTube captions are visibly poor. Velocity matters more than ASR perfection in v0.
 
@@ -55,10 +55,29 @@ Target: ~80 verified examples across 10–12 talks in 5 working days.
      format_tags: [slides_heavy, narrative]
      license: youtube_standard
      captions_source: youtube_auto
-     transcript_path: "transcripts/zjkBMFhNj_g.en.vtt"
+     transcript_path: "transcripts/ai_engineering_v0/zjkBMFhNj_g.en.vtt"
      transcript_sha256: "<paste from sha256sum>"
      accessed_at: "2026-05-24T10:00:00Z"
      notes: "Clean audio, clear slides — calibration talk."
+   ```
+
+   Chapter-sliced example:
+   ```yaml
+   - video_id: aie_sg_2026_d2_arize_alyx
+     source_video_id: m12vGjfbNlo
+     source_start_sec: 516
+     source_end_sec: 1494
+     title: "Alyx planning states, large JSON abstractions, and reliable agent checkpoints"
+     speaker: "SallyAnn DeLucia"
+     url: "https://www.youtube.com/watch?v=m12vGjfbNlo&t=516s"
+     duration_sec: 978
+     format_tags: [slides_heavy, narrative]
+     license: youtube_standard
+     captions_source: youtube_auto
+     transcript_path: "transcripts/ai_engineering_v0/aie_sg_2026_d2_arize_alyx.en.vtt"
+     transcript_sha256: "<paste from sha256sum>"
+     accessed_at: "2026-05-24T10:00:00Z"
+     notes: "Chapter slice from AI Engineer Singapore Day 2 livestream."
    ```
 
 3. **Skim the talk at 1.75x** with the transcript open. Note 8–12 candidate moments where the speaker says something concrete and searchable.

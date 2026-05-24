@@ -106,6 +106,24 @@ def check_span_ranges(spans, source: str, field: str = "gold_spans") -> list[str
     return errs
 
 
+def check_talk_source_range(talk: dict, source: str) -> list[str]:
+    """Semantic checks for chapter-sliced talk records."""
+    errs: list[str] = []
+    s, e = talk.get("source_start_sec"), talk.get("source_end_sec")
+    if s is not None and e is not None:
+        if e <= s:
+            errs.append(f"{source}: source_end_sec ({e}) <= source_start_sec ({s})")
+        duration = talk.get("duration_sec")
+        if isinstance(duration, int):
+            expected = round(e - s)
+            if abs(duration - expected) > 1:
+                errs.append(
+                    f"{source}: duration_sec ({duration}) does not match source slice "
+                    f"length ({expected})"
+                )
+    return errs
+
+
 def validate_example(ex: dict, gold_v: Draft202012Validator, source: str) -> list[str]:
     """Schema + cross-field semantic checks for a gold example."""
     errs = [f"{source}: {e.message}" for e in gold_v.iter_errors(ex)]
@@ -201,6 +219,7 @@ def validate_corpora(strict: bool = False) -> int:
                 source = f"{talks_file}::{talk.get('video_id', '?')}"
                 for err in talk_v.iter_errors(talk):
                     errors.append(f"{source}: {err.message}")
+                errors.extend(check_talk_source_range(talk, source))
                 video_id = talk.get("video_id")
                 if not video_id:
                     continue

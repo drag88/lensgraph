@@ -3,8 +3,44 @@
 # transcript_sha256 is the SHA256 of the file at transcript_path at curation time.
 # Run `make validate-evals` after adding a talk.
 
-# Example entry below is illustrative only — replace with real ingested talks during curation phase.
-# The validator will fail this until transcripts/zjkBMFhNj_g.vtt exists with the matching SHA.
-# Remove the example or update once curation starts.
+- video_id: nXafozNIk3c
+  title: "Google's Agents CLI is here: Build, eval, and deploy AI agents in minutes"
+  speaker: "Google Cloud Tech"
+  url: "https://www.youtube.com/watch?v=nXafozNIk3c"
+  duration_sec: 3179
+  format_tags: [code_heavy, live_demo]
+  license: youtube_standard
+  captions_source: youtube_auto
+  transcript_path: "transcripts/ai_engineering_v0/nXafozNIk3c.en.vtt"
+  transcript_sha256: "59f42a89e771a372504c8d3384b84c5bec017f4cb22ef41b28f7a4e61b2d3daa"
+  accessed_at: "2026-05-24T08:24:43Z"
+  notes: "2026 non-AI-Engineer source for build/eval/deploy agent workflow."
 
-[]
+- video_id: aie_sg_2026_d2_arize_alyx
+  source_video_id: m12vGjfbNlo
+  source_start_sec: 516
+  source_end_sec: 1494
+  title: "Alyx planning states, large JSON abstractions, and reliable agent checkpoints"
+  speaker: "SallyAnn DeLucia"
+  url: "https://www.youtube.com/watch?v=m12vGjfbNlo&t=516s"
+  duration_sec: 978
+  format_tags: [slides_heavy, narrative]
+  license: youtube_standard
+  captions_source: youtube_auto
+  transcript_path: "transcripts/ai_engineering_v0/aie_sg_2026_d2_arize_alyx.en.vtt"
+  transcript_sha256: "09e755fb35a86d4d9c96cc01a2fa58469af0c6dcd96a806a382548757c3dcd27"
+  accessed_at: "2026-05-24T08:24:43Z"
+  notes: "Chapter slice from AI Engineer Singapore Day 2 livestream."
+
+- video_id: W_CYk2ogcDI
+  title: "RAG in 2025: State of the Art and the Road Forward"
+  speaker: "Tengyu Ma"
+  url: "https://www.youtube.com/watch?v=W_CYk2ogcDI"
+  duration_sec: 1128
+  format_tags: [slides_heavy, narrative]
+  license: youtube_standard
+  captions_source: youtube_auto
+  transcript_path: "transcripts/ai_engineering_v0/W_CYk2ogcDI.en.vtt"
+  transcript_sha256: "a30f5348c95a05bd92dc938e1529b2c15065fade74c694cdadbf0ecd5348f3ea"
+  accessed_at: "2026-05-24T08:24:43Z"
+  notes: "Compact retrieval baseline talk from AI Engineer."

@@ -22,7 +22,22 @@
     "video_id": {
       "type": "string",
       "minLength": 1,
-      "description": "YouTube ID or other stable identifier."
+      "description": "YouTube ID for direct videos, or a stable pseudo-ID for chapter-sliced talks."
+    },
+    "source_video_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Original source video ID when video_id is a chapter-sliced pseudo-ID."
+    },
+    "source_start_sec": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Start offset in the original source video for chapter-sliced talks."
+    },
+    "source_end_sec": {
+      "type": "number",
+      "minimum": 0,
+      "description": "End offset in the original source video for chapter-sliced talks."
     },
     "title": { "type": "string", "minLength": 1 },
     "speaker": { "type": "string", "minLength": 1 },
@@ -67,5 +82,10 @@
     },
     "accessed_at": { "type": "string", "format": "date-time" },
     "notes": { "type": "string" }
+  },
+  "dependentRequired": {
+    "source_video_id": ["source_start_sec", "source_end_sec"],
+    "source_start_sec": ["source_video_id", "source_end_sec"],
+    "source_end_sec": ["source_video_id", "source_start_sec"]
   }
 }
