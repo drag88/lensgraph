@@ -1,18 +1,19 @@
 # Phase 1 Design — LensGraph Ingest, Retrieve, LangGraph Loop
 
-**Status:** rev 2, pending `/cdf:plan-review` re-run
+**Status:** rev 3, pending `/cdf:plan-review` re-run
 **Date:** 2026-05-24
-**Scope:** weeks 3–5 of `docs/roadmap.md` (rev 2 moves LangGraph from old phase 3 into phase 1; see Changelog).
+**Scope:** weeks 3–5 of `docs/roadmap.md`.
 **Out of scope:** phase-4 surface (FastAPI + Next.js), auth, anything in §10.
 
 ## Changelog
 
-- **rev 2 (2026-05-24).** Major:
-  1. LangGraph loop (Plan → Retrieve → Rerank → Verify → Generate → Cite with Verify→Retrieve back-edge) moved into phase 1. The agent loop is part of the v1 PRD and `docs/architecture.md`; deferring it to phase 3 created a two-month contradiction between architecture and implementation. `docs/roadmap.md` updated in the same commit.
-  2. `eval/runners/minimal_generation.py` repositioned as an **internal bakeoff harness** (used by phase-2 generator+judge bakeoff to score candidates without confounding from Plan/Verify/Cite). NOT the product path. The LangGraph loop is the product path.
-  3. **Tracing** added in v1 via a Postgres-native `traces` + `trace_spans` schema (Langfuse-shaped, but in-database to honor ADR 002). Optional external Langfuse sink deferred to v2.
-  - Five plan-review findings closed (see §11).
-  - Earlier `/cdf:plan-review` amendments (sparsevec dim, Docker image, FOR UPDATE, AsrJob timeout, ffmpeg dependency, provider retry, latency definition, overlap comment, models-warm/replay-dlq/logs targets, slow-test gating, claim_index correction, batched chunk_token_embeds SELECT, HNSW note) all applied.
+- **rev 3 (2026-05-24).** Tightens ADR 004 v3.1's "no silent model defaults" rule across **every** model-using node in the LangGraph loop:
+  1. `load_bakeoff_winner_or_default()` → `load_bakeoff_winner_or_raise()`. No "first YAML candidate" fallback anywhere. Pre-bakeoff, `answer()` and `make answer` require an explicit `GENERATOR=...`; post-bakeoff, they may auto-load the locked winner from `eval_runs`.
+  2. Same rule applied to Verify. `judge_candidate` added to `AgentState` and `answer()`. Pre-judge-bakeoff, `make answer` requires `JUDGE=...`; post-bakeoff, auto-load. When both generator and judge are explicitly passed, cross-family is **enforced** (raises `CrossFamilyViolationError`).
+  3. Plan node gains a **deterministic non-LLM mode**, which is the default before the cheap-extraction component is bakeoff-locked. Explicit `PLANNER=...` overrides to use an LLM cheap-extraction candidate. Either way, no silent LLM default.
+  4. `BakeoffNotYetRunError` documented as the public failure mode; `make answer` surfaces it with a copy-pasteable fix message ("re-run with GENERATOR=qwen3-235b-a22b-instruct JUDGE=deepseek-v3.2 …").
+  5. Other rev-3 amendments folded in from the second `/cdf:plan-review` pass: fan-out step completion semantics (PGMQ DAG), shared `parse_generation_output()` between bakeoff harness and LangGraph generate node, `Dockerfile.postgres` build-verification gate in week 3, visual-channel sampling-density note, catastrophic-regression rerank smoke test, trace spans store `chunk_ids` not chunk text, verify confidence threshold from env var, `AsrJob.timeout_sec` default raised to 1800, caption quality probe heuristic specified, CI runs `make test`, AgentState serialization helpers, honest 30–35h budget acknowledged.
+- **rev 2 (2026-05-24).** LangGraph loop (Plan → Retrieve → Rerank → Verify → Generate → Cite with Verify→Retrieve back-edge) moved from old phase 3 into phase 1. `eval/runners/minimal_generation.py` repositioned as internal bakeoff harness only. Postgres-native tracing added. Five plan-review findings closed (scalar status, pgmq image, citation leakage, visual-channel dependence, rerank-as-test). Earlier round of `/cdf:plan-review` amendments (sparsevec dim, Docker image, FOR UPDATE, ffmpeg dependency, provider retry, latency definition, overlap comment, models-warm/replay-dlq/logs targets, slow-test gating, claim_index correction, batched chunk_token_embeds SELECT, HNSW note) all applied.
 - **rev 1 (2026-05-24).** Initial design. Deferred LangGraph to phase 3. Superseded same day.
 
 ## Binding constraints
@@ -409,6 +410,19 @@ SELECT status FROM ingest_step_status
 
 If status is `completed` or `skipped`, the job acks and exits. Otherwise the job sets `status = 'in_progress'` (incrementing `attempts`), does the work, then sets `status = 'completed'` in the same transaction that writes the artifact and deletes the PGMQ message. `FOR UPDATE` makes this safe even if concurrency lifts to multiple workers per queue later (v0 runs one worker per queue, but the lock is free insurance).
 
+**Fan-out step semantics.** `embed_text` and `embed_frames` are fan-out steps — one job per `chunk_id` / `frame_id`. Two pieces of behavior MUST be explicit:
+
+1. **Who enqueues children.** The `chunk` worker, in the same transaction that writes the chunks rows, calls `pgmq.send_batch('ingest_embed_text', [...one payload per chunk_id...])` and writes an `(video_id, 'embed_text', chunk_id, status='pending')` row per chunk into `ingest_step_status`. If the chunk worker crashes between insert and enqueue, transaction rollback un-writes both the chunks rows and the queue messages — the chunk job stays in-flight and the next dequeue retries cleanly (the chunks insert is idempotent via the `UNIQUE (video_id, chunking_strategy, start_sec, end_sec)` constraint). Same pattern for `frame_sample` worker enqueueing `embed_frames` children.
+
+2. **When the fan-out is "done" for a video.** There is no `(video_id, 'embed_text', 0)` summary row; entity_id=0 is reserved for whole-video steps. `ingest.pipeline.next_step(video_id)` determines fan-out completion by counting:
+   ```sql
+   SELECT
+     (SELECT count(*) FROM chunks WHERE video_id=$1) AS expected,
+     (SELECT count(*) FROM ingest_step_status
+        WHERE video_id=$1 AND step='embed_text' AND status='completed') AS done
+   ```
+   `embed_text` is complete for the video when `done == expected AND expected > 0`. Same shape for `embed_frames` against `frames`. The reconciler treats `done < expected` as "still pending" and surfaces stalled children (`status='failed'` or `attempts >= 3` without completion) so they can be replayed manually via `make replay-dlq`.
+
 **Failure isolation.** PGMQ visibility timeout = 5 min. After `attempts >= 3`, the worker explicitly moves the message to `<queue>_dlq` and writes `status = 'failed'` with `error_payload` set. Surrounding jobs keep flowing. Manual replay: `make replay-dlq QUEUE=ingest_embed_text`.
 
 **Concurrency.** One worker process per queue in v0 (1 video at a time end-to-end). `embed_text` and `embed_frames` can lift to 2 workers each if MPS contention allows — usually doesn't because BGE-M3 and ColQwen2.5 both want the GPU. The schema is concurrency-safe regardless via FOR UPDATE.
@@ -419,7 +433,7 @@ If status is `completed` or `skipped`, the job acks and exits. Otherwise the job
 @dataclass(frozen=True)
 class FetchJob:        video_id: str
 @dataclass(frozen=True)
-class AsrJob:          video_id: str; audio_path: str; timeout_sec: int = 900
+class AsrJob:          video_id: str; audio_path: str; timeout_sec: int = 1800
 @dataclass(frozen=True)
 class FramesJob:       video_id: str; sample_every_sec: float = 10.0
 @dataclass(frozen=True)
@@ -430,7 +444,24 @@ class EmbedTextJob:    video_id: str; chunk_id: int
 class EmbedFramesJob:  video_id: str; frame_id: int
 ```
 
-**WhisperX timeout.** `ingest/asr.py` runs WhisperX inside a thread with `Thread.join(timeout_sec)`. On timeout the thread is abandoned (best-effort; WhisperX MPS hangs are unrecoverable cleanly), the job records `error_payload={"reason":"asr_timeout"}`, status flips to `failed`, message moves to DLQ. Fallback path: re-enqueue with `captions_source` set back to `youtube_auto` and skip ASR (accept lower transcript quality with a `notes` flag on the talk).
+**WhisperX timeout.** `ingest/asr.py` runs WhisperX inside a thread with `Thread.join(timeout_sec)`. Default `1800s` (30 min) covers a 60-min talk at ~5–10× real-time on MPS plus model-load slack. On timeout the thread is abandoned (best-effort; WhisperX MPS hangs are unrecoverable cleanly), the job records `error_payload={"reason":"asr_timeout"}`, status flips to `failed`, message moves to DLQ. Fallback path: re-enqueue with `captions_source` set back to `youtube_auto` and skip ASR (accept lower transcript quality with a `notes` flag on the talk).
+
+**Caption quality probe (`ingest/quality.py`).** Decides whether to skip ASR and use the YouTube auto-captions directly:
+
+```python
+def probe(vtt_text: str, duration_sec: int) -> Literal["accept", "rerun"]:
+    cues = parse_cues(vtt_text)
+    words_per_sec = sum(len(c.text.split()) for c in cues) / max(1, duration_sec)
+    placeholder_pat = re.compile(r"\[(music|applause|silence|inaudible)\]", re.I)
+    placeholder_ratio = (
+        sum(1 for c in cues if placeholder_pat.fullmatch(c.text.strip())) / max(1, len(cues))
+    )
+    if words_per_sec < 1.0 or placeholder_ratio > 0.30:
+        return "rerun"
+    return "accept"
+```
+
+Thresholds are heuristic and phase-2 may tune them; they capture the failure mode where YouTube emits long stretches of `[Music]` placeholders or extremely sparse cues. ASR runs are expensive — running unnecessarily wastes 10+ min per talk; skipping inappropriately corrupts every downstream chunk.
 
 ---
 
@@ -471,6 +502,8 @@ k = 60
 ```
 
 **Why visual is a true 5th channel now (rev 2 change).** Rev 1 had visual MaxSim operate over the dense+sparse top-100, making it effectively a reranker over transcript-selected chunks — not an independent retrieval signal. Rev 2 adds `frames.pooled_embedding` (single ColQwen-pooled vector per frame, HNSW-indexed) so the visual channel finds slide-bearing chunks regardless of whether the transcript channels picked them. Storage cost: ~6KB per frame × ~100 frames per slide-bearing talk × ~250 talks = ~150MB at v1 — negligible.
+
+**Visual channel recall is bounded by frame sampling density.** Default `sample_every_sec=10.0`, so a 30s chunk has ~3 frames. A chunk with zero frames in its span (e.g., a transcript-only segment of a code_heavy talk where ffmpeg sampled nothing in the chunk's window) cannot be a visual-channel hit; RRF treats this as a missing-channel contribution (the chunk's `channel_ranks` dict simply omits `visual`). For v0 the 1-frame-per-10s density is sufficient; if phase-2 results show recall starved on slide-heavy talks, the lever is sampling density, not channel design.
 
 **MaxSim sketch (batched):**
 
@@ -514,10 +547,17 @@ The product path. The user-facing `answer(query, corpus_id)` runs through this g
 from typing import TypedDict, Literal
 
 class AgentState(TypedDict, total=False):
-    # Inputs (immutable through the graph run)
+    # Inputs (immutable through the graph run). All model candidates are
+    # required at run start — answer() raises BakeoffNotYetRunError if any
+    # is None and no locked bakeoff winner exists for that component.
     query: str
     corpus_id: str
-    generator_candidate: GeneratorCandidate     # from model_candidates.yaml
+    generator_candidate: GeneratorCandidate     # required; from model_candidates.yaml
+    judge_candidate: JudgeCandidate             # required; from model_candidates.yaml
+    planner_candidate: CheapExtractionCandidate | None
+                                                # None → Plan uses deterministic fallback
+                                                # not-None → Plan calls the LLM
+    verify_confidence_threshold: float          # from env or default 0.6
 
     # Plan output
     question_type: Literal["single_clip", "synthesis"]
@@ -547,15 +587,33 @@ class AgentState(TypedDict, total=False):
     trace_id: str
 ```
 
+`AgentState` is `TypedDict(total=False)` so phase 3 can add fields (e.g., verifier-tuning telemetry) without breaking phase-1 traces. The jsonb columns `trace_spans.input`/`output` query gracefully with missing keys (`->>` returns NULL). To minimize trace storage (see §9), spans store `chunk_ids: list[int]` rather than full chunk text — the phase-4 trace viewer joins `chunks` for display on read.
+
 ### Nodes
 
 ```python
 # generate/nodes/plan.py
 def plan(state: AgentState) -> AgentState:
-    # Cheap-extraction model (see model_candidates.yaml). Determines:
-    # - single_clip vs synthesis (informs how Cite attaches citations)
-    # - up to 3 sub-queries for synthesis questions
-    # On parse failure: defaults to single_clip with the original query as the only sub-query.
+    # Two paths, picked by whether the caller supplied a planner_candidate.
+    #
+    # 1. state["planner_candidate"] is None — DETERMINISTIC PATH (default
+    #    pre-bakeoff). No LLM call. Heuristic:
+    #      - question_type = "synthesis" if the query matches synthesis
+    #        cues (e.g., r"\b(compare|contrast|both|and .+ (say|argue))\b"
+    #        or multiple known speaker names from talks.yaml); else
+    #        "single_clip".
+    #      - sub_queries = [query]. Synthesis decomposition into multiple
+    #        sub-queries requires an LLM; deterministic mode degrades to a
+    #        single retrieval pass over the original query.
+    #    Cheap, reproducible, free, and honest about its limits.
+    #
+    # 2. state["planner_candidate"] is set — LLM PATH. Calls
+    #    providers.chat_completion(planner_candidate, ...) with a structured
+    #    prompt that emits JSON {question_type, sub_queries[]}. On parse
+    #    failure: degrades to deterministic path with a `notes` log entry.
+    #
+    # No silent LLM default. Caller must explicitly pass planner_candidate
+    # via PLANNER=... (see §7), or accept the deterministic path.
 
 # generate/nodes/retrieve.py
 def retrieve(state: AgentState) -> AgentState:
@@ -569,25 +627,33 @@ def rerank(state: AgentState) -> AgentState:
 
 # generate/nodes/verify.py
 def verify(state: AgentState) -> AgentState:
-    # Uses the chosen JUDGE candidate from model_candidates.yaml to score
-    # whether top-3 reranked chunks plausibly contain the answer.
-    # Returns confidence 0..1 and a reason string.
-    # If confidence < threshold (0.6) AND state["iteration"] < 2:
-    #   sets refined_query (judge proposes a rewrite) and signals loop.
+    # Uses state["judge_candidate"] (required; passed by answer()) to score
+    # whether top-3 reranked chunks plausibly contain the answer. Returns
+    # confidence 0..1 and a reason string.
+    # If confidence < state["verify_confidence_threshold"]
+    #    AND state["iteration"] < 2:
+    #      sets refined_query (judge proposes a rewrite) and signals loop.
     # Else: signals continue → generate.
+    #
+    # Threshold default 0.6, overridable via env
+    # LENSGRAPH_VERIFY_CONFIDENCE_THRESHOLD so phase-3 tuning sweeps don't
+    # require code changes.
 
 # generate/nodes/generate.py
 def generate(state: AgentState) -> AgentState:
     # Calls providers.chat_completion(state["generator_candidate"], ...)
     # over the top-8 reranked chunks. Prompts for strict JSON conforming to
-    # GenerationOutput (see §6). On parse failure: parse_ok=False, answer=None,
-    # latency captured. No retry.
+    # GenerationOutput (see §6). Uses the SHARED parse_generation_output()
+    # helper (generate/parser.py) so this code path and minimal_generation
+    # cannot drift. On parse failure: parse_ok=False, answer=None, latency
+    # captured. No retry.
 
 # generate/nodes/cite.py
 def cite(state: AgentState) -> AgentState:
-    # Map each model-emitted claim's citation indices to actual [video_id,
-    # start_sec, end_sec] tuples from state["reranked"]. Build AnswerResult.
-    # If parsed.abstain=True: final.abstain=True, answer=None.
+    # Map each model-emitted claim's citation indices (answer_claim_index)
+    # to actual [video_id, start_sec, end_sec] tuples from state["reranked"].
+    # Build AnswerResult. If parsed.abstain=True: final.abstain=True,
+    # answer=None.
 ```
 
 ### Graph wiring
@@ -632,22 +698,58 @@ def build_graph() -> CompiledGraph:
 
 Spans batch-flush at graph completion (one `INSERT ... VALUES (...), (...)` per trace) to avoid hot-path overhead. `traces` row updates inline at start + completion. Trace tail-sampling is a v2 concern; v0 stores all traces.
 
-### Public entry point
+### Public entry point — no silent model defaults anywhere
 
 ```python
 # generate/api.py
+class BakeoffNotYetRunError(RuntimeError):
+    """Raised when answer() is called without an explicit candidate AND no
+    locked bakeoff winner exists for that component. Caller must pass an
+    explicit candidate or wait for the bakeoff to lock a winner."""
+
+class CrossFamilyViolationError(RuntimeError):
+    """Raised when both generator and judge are explicitly passed AND share
+    a model family. ADR 004 v3.1 anti-preference-leakage rule."""
+
 async def answer(
     query: str,
     *,
     corpus_id: str = "ai_engineering_v0",
     generator_candidate: GeneratorCandidate | None = None,
+    judge_candidate: JudgeCandidate | None = None,
+    planner_candidate: CheapExtractionCandidate | None = None,
 ) -> AnswerResult:
+    # Resolve generator: explicit > locked winner > raise.
     if generator_candidate is None:
-        generator_candidate = load_bakeoff_winner_or_default()
+        generator_candidate = load_bakeoff_winner_or_raise(
+            component="generator", corpus_id=corpus_id,
+        )
+
+    # Resolve judge: explicit > locked winner > raise.
+    if judge_candidate is None:
+        judge_candidate = load_bakeoff_winner_or_raise(
+            component="judge", corpus_id=corpus_id,
+        )
+
+    # Enforce cross-family discipline whenever both are present (always, now).
+    if judge_candidate.family == generator_candidate.family:
+        raise CrossFamilyViolationError(
+            f"judge family '{judge_candidate.family}' must differ from "
+            f"generator family '{generator_candidate.family}' (ADR 004 v3.1)"
+        )
+
+    # Planner is optional — None means deterministic Plan (no LLM, no default).
+    # Explicit passing engages the LLM path.
+
     state: AgentState = {
         "query": query,
         "corpus_id": corpus_id,
         "generator_candidate": generator_candidate,
+        "judge_candidate": judge_candidate,
+        "planner_candidate": planner_candidate,
+        "verify_confidence_threshold": float(
+            os.getenv("LENSGRAPH_VERIFY_CONFIDENCE_THRESHOLD", "0.6")
+        ),
         "iteration": 0,
         "trace_id": new_uuid7(),
     }
@@ -656,7 +758,34 @@ async def answer(
     return final_state["final"]
 ```
 
-`load_bakeoff_winner_or_default()` reads `eval_runs` for the most recent `code_path='langgraph'` row with a complete bakeoff; if none exists yet (phase 1 reality before phase 2 runs), it returns the first generator candidate from `model_candidates.yaml` and logs a warning. This is the ONLY place a "default" leaks in — and it's labeled, traced, and replaced on first bakeoff.
+`load_bakeoff_winner_or_raise(component, corpus_id)` queries `eval_runs`:
+
+```sql
+SELECT generator_model_id      -- or judge_model_id, etc.
+  FROM eval_runs
+ WHERE summary->>'winner_locked' = 'true'
+   AND summary->>'component'     = $1     -- 'generator' | 'judge' | 'cheap_extraction'
+   AND chunking_strategy         = 'fixed_window'   -- v0 lock
+ ORDER BY created_at DESC
+ LIMIT 1
+```
+
+If the query returns no row, **it raises `BakeoffNotYetRunError`**. The error message is copy-pasteable:
+
+```
+BakeoffNotYetRunError: no locked winner for component='generator' in corpus
+'ai_engineering_v0'. Pass generator_candidate explicitly, e.g.:
+
+    make answer QUERY="..." GENERATOR=qwen3-235b-a22b-instruct \
+                            JUDGE=deepseek-v3.2
+
+Once the phase-2 generator+judge bakeoff lands a winner_locked=true row in
+eval_runs, this fallback path auto-resolves.
+```
+
+**There is no silent default anywhere.** Pre-bakeoff, every `answer()` call requires the caller to name the generator and the judge. Post-bakeoff, the locked winners auto-resolve and the caller can omit them. Planner is the only model-using node where "no LLM at all" is the default — and that's a *deterministic* default, not a model choice.
+
+**Cross-family enforcement.** Whenever both generator and judge candidates are present (always, now), `judge.family != generator.family` is enforced. ADR 004 v3.1's anti-preference-leakage rule becomes a runtime invariant, not a checklist item.
 
 ---
 
@@ -706,7 +835,7 @@ def generate_for_bakeoff(
 
 **Prompt shape.** Single user message: query + top-`k` retrieved chunks with `[video_id @ start_sec-end_sec]` labels. System message: strict JSON conforming to `GenerationOutput`; instructions to decompose answer into atomic claims; abstain when chunks don't contain the answer; cite by `answer_claim_index` for every claim.
 
-**Parse strategy.** `GenerationOutput.model_validate_json(response)`. Any validation error → `parse_ok=False`, latency captured, raw stored. **No retry.** Parse failures are real bakeoff signal.
+**Parse strategy.** `parse_generation_output(response: str) -> tuple[GenerationOutput | None, bool, str | None]` lives in `generate/parser.py` and is imported by BOTH `minimal_generation.generate_for_bakeoff` AND `generate/nodes/generate.py`. Single source of truth — the two code paths cannot drift on JSON parse semantics, which would make the phase-2 bakeoff and phase-3 LangGraph comparison measure different things. Internals: `GenerationOutput.model_validate_json(response)`; any validation error → `(None, False, error_message)`, latency captured by the caller, raw stored. **No retry.** Parse failures are real bakeoff signal.
 
 **Latency definition.** Total wall-clock from request send to full response receive. ADR 004 v3.1's `p95 generation latency ≤ 2.0s` minimum is interpreted as total latency in batch (non-streaming) mode. Phase 1 + 2 do not stream. If TTFT becomes a phase-4 demo concern, the harness adds a streaming code path and re-runs the bakeoff.
 
@@ -802,7 +931,8 @@ Existing targets unchanged: `validate-evals`, `phase0-gate`, `validate-self-test
 ```
 db-up            docker compose up -d postgres
 db-down          docker compose stop postgres
-db-build         docker compose build postgres        (custom image)
+db-build         docker compose build postgres        (custom image; gated in week-3 step 2)
+db-verify-ext    psql -c 'CREATE EXTENSION pgmq; CREATE EXTENSION vector;' against the built image
 db-migrate       uv run python -m db.migrate
 db-reset         destructive: drop + recreate + apply all migrations from 0001.
                  No partial rollback — v0 disaster-recovery path. Confirmation prompt.
@@ -811,14 +941,48 @@ ingest           uv run python -m ingest.cli $(VIDEO_ID)
 ingest-all       uv run python -m ingest.cli --corpus $(CORPUS)
 workers          uv run python -m queues.workers --queues fetch,asr,frames,chunk,embed_text,embed_frames
 retrieve-test    uv run python -m retrieve.api --query "$(QUERY)"
-answer           uv run python -m generate.api --query "$(QUERY)"     (LangGraph product path)
+
+# Product path. Pre-bakeoff (today), every model node requires explicit choice
+# OR accepts the deterministic Plan default. Post-bakeoff, GENERATOR/JUDGE
+# auto-resolve to the locked winner and only QUERY is required.
+answer           uv run python -m generate.api \
+                   --query "$(QUERY)" \
+                   --generator "$(GENERATOR)" \           # required pre-bakeoff
+                   --judge "$(JUDGE)" \                   # required pre-bakeoff; cross-family enforced
+                   $(if $(PLANNER),--planner "$(PLANNER)") # optional; omit for deterministic plan
+                 # On BakeoffNotYetRunError, prints copy-pasteable fix message.
+
 replay-dlq       uv run python -m queues.workers --replay-dlq $(QUEUE)
 logs             tail -f $${LENSGRAPH_LOG_PATH:-./.lensgraph/logs/workers.log}
 bakeoff-prep     verify chunks + embeddings exist for every video_id referenced by dev_gold;
                  print red/green per video
 ```
 
-Env vars: `POSTGRES_DSN`, `LENSGRAPH_PROVIDER_FAILOVER`, `LENSGRAPH_LOG_PATH`, `DEEPINFRA_API_KEY`, `OPENROUTER_API_KEY` (optional), `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` (optional, only when local MPS OOMs on ColQwen2.5).
+**Pre-bakeoff `make answer` example** (period before phase-2 winners are locked):
+
+```bash
+make answer QUERY="how does Tengyu Ma compare long context, fine-tuning, and RAG" \
+            GENERATOR=qwen3-235b-a22b-instruct \
+            JUDGE=deepseek-v3.2
+# planner omitted → deterministic Plan (single_clip, no decomposition)
+
+make answer QUERY="..." GENERATOR=gemma-4-31b JUDGE=deepseek-v3.2 PLANNER=gemma-4-e4b
+# planner explicit → LLM Plan via local Gemma-4-e4b
+```
+
+**Cross-family violations fail fast.** `make answer QUERY="..." GENERATOR=gemma-4-31b JUDGE=gemma-4-31b` raises `CrossFamilyViolationError` before any LLM call lands.
+
+**Post-bakeoff `make answer` (phase 2+):**
+
+```bash
+make answer QUERY="..."
+# auto-resolves GENERATOR + JUDGE from eval_runs.summary.winner_locked = true
+# explicit args still override
+```
+
+CI runs `make test` (fast tests only) between `validate-evals` and `lint`. `make test-slow` stays local-only (requires model downloads).
+
+Env vars: `POSTGRES_DSN`, `LENSGRAPH_PROVIDER_FAILOVER`, `LENSGRAPH_LOG_PATH`, `LENSGRAPH_VERIFY_CONFIDENCE_THRESHOLD` (default 0.6), `DEEPINFRA_API_KEY`, `OPENROUTER_API_KEY` (optional), `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` (optional, only when local MPS OOMs on ColQwen2.5).
 
 ---
 
@@ -837,7 +1001,7 @@ addopts = "-m 'not slow'"     # default to fast-only
 ### Week 3 — substrate + ingestion
 
 1. RED: `eval/tests/test_db_migrations.py` — apply migrations 0001..0005 to a fresh test DB, assert schema shape (extensions, tables, key columns typed correctly, **sparsevec dim is 250002**).
-2. GREEN: `db/migrate.py`, `db/migrations/0001..0005`, `db/conn.py`, `Dockerfile.postgres`. `make db-build && make db-up && make db-migrate`.
+2. GREEN: `db/migrate.py`, `db/migrations/0001..0005`, `db/conn.py`, `Dockerfile.postgres`. **GREEN-blocking gate before any further work:** `make db-build && make db-up && make db-verify-ext` MUST succeed — verifies both `CREATE EXTENSION pgmq` and `CREATE EXTENSION vector` succeed in the built image. If `postgresql-16-pgmq` is unavailable on PGDG, swap to the Tembo `quay.io/tembo/pg17-pgmq` base in `Dockerfile.postgres`, then re-verify pgvector ≥ 0.7 with `psql -c "\dx"`. This is the first failure surface where the design's image-strategy assumption gets tested; surfacing it now avoids cascading week-3/4 work on a broken substrate.
 3. RED: `eval/tests/test_talks_repo.py` — round-trip a talks.yaml row.
 4. GREEN: `db/repos/talks.py`, `db/repos/ingest_step_status.py` (upsert, claim-for-update, mark-completed/failed).
 5. RED: `eval/tests/test_pgmq_smoke.py` — enqueue + transactional consume + ack a no-op job; verify status row transitions.
@@ -867,14 +1031,14 @@ addopts = "-m 'not slow'"     # default to fast-only
 23. GREEN: `ingest/frames.py` via ffmpeg subprocess.
 24. RED: `eval/tests/test_colqwen_patches.py` (`@pytest.mark.slow`) — patch embeddings + pooled embedding per frame.
 25. GREEN: `embed/colqwen.py` full implementation (patches + pooled). Run frame ingest on all 3 talks.
-26. RED: `eval/tests/test_rerank_functional.py` (`@pytest.mark.slow`) — reranker returns `top_k` chunks in monotonic score order, doesn't drop chunks. **Functional only.** Quality lift over RRF is captured by `scripts/log_retrieval_quality.py` writing to `eval_runs` (artifact, not test gate — finding #5).
+26. RED: `eval/tests/test_rerank_functional.py` (`@pytest.mark.slow`) — reranker returns `top_k` chunks in monotonic score order, doesn't drop chunks. **Functional only.** Quality lift over RRF is captured by `scripts/log_retrieval_quality.py` writing to `eval_runs` (artifact, not test gate — finding #5). PLUS a catastrophic-regression smoke gate: `test_rerank_smoke.py::test_known_gold_chunk_in_top_5` asserts the `tengyu-rag-library-analogy` gold chunk lands top-5 both pre- and post-rerank. Tight, single-example assertion, designed to catch "reranker returns chunks in reverse order" failures — not a quality metric.
 27. GREEN: `retrieve/rerank.py`.
-28. RED: `eval/tests/test_minimal_generation.py` (`@pytest.mark.slow`, mocked provider) — happy path parse_ok=True, malformed JSON parse_ok=False, citation `answer_claim_index` references model's own claims, latency captured on both, raw_response always present.
-29. GREEN: `eval/runners/minimal_generation.py`, `eval/runners/providers.py`.
-30. RED: `eval/tests/test_generate_nodes.py` (`@pytest.mark.slow`) — each LangGraph node tested in isolation with stub inputs; state transitions correct; trace spans emitted.
+28. RED: `eval/tests/test_minimal_generation.py` (`@pytest.mark.slow`, mocked provider) — happy path parse_ok=True via SHARED `parse_generation_output`, malformed JSON parse_ok=False, citation `answer_claim_index` references model's own claims, latency captured on both, raw_response always present.
+29. GREEN: `eval/runners/minimal_generation.py`, `eval/runners/providers.py`, `generate/parser.py` (shared parser; consumed by both this step and step 31).
+30. RED: `eval/tests/test_generate_nodes.py` (`@pytest.mark.slow`) — each LangGraph node tested in isolation with stub inputs; state transitions correct; trace spans emitted; spans store `chunk_ids: list[int]`, not chunk text. Plus `test_plan_deterministic.py` covering the no-LLM Plan path's classify-and-degenerate behavior.
 31. GREEN: `generate/nodes/*.py`, `generate/state.py`, `generate/trace.py`, `db/repos/traces.py`.
-32. RED: `eval/tests/test_generate_graph.py` (`@pytest.mark.slow`) — end-to-end on one dev_gold example with mocked generator + judge; assert (a) trace + spans persisted, (b) Verify→Retrieve loop fires when judge returns low confidence, (c) iteration cap stops at 2, (d) abstention path produces `final.abstain=True`.
-33. GREEN: `generate/graph.py`, `generate/api.py`.
+32. RED: `eval/tests/test_generate_graph.py` (`@pytest.mark.slow`) — end-to-end on one dev_gold example with mocked generator + judge; assert (a) trace + spans persisted, (b) Verify→Retrieve loop fires when judge returns low confidence, (c) iteration cap stops at 2, (d) abstention path produces `final.abstain=True`, (e) `BakeoffNotYetRunError` raised when generator/judge omitted AND no winner_locked row exists, (f) `CrossFamilyViolationError` raised when generator+judge share a family.
+33. GREEN: `generate/graph.py`, `generate/api.py` (with `load_bakeoff_winner_or_raise()`).
 34. **Artifact:** `make answer QUERY="how does Tengyu Ma compare long context, fine-tuning, and RAG"` returns a cited answer + trace_id; `SELECT * FROM trace_spans WHERE trace_id = '<id>'` shows the full Plan→Retrieve→Rerank→Verify→Generate→Cite path. THIS IS THE WEEK-5 EXIT GATE.
 35. **Bakeoff prep artifact:** one-off harness run via `minimal_generation.generate_for_bakeoff` on all 11 dev_gold examples with one generator candidate (arbitrarily selected, NOT "the winner") produces per-example latency, parse_ok, citations into `eval_runs` (code_path='minimal_generation'). UNLOCKS phase 2.
 
@@ -892,10 +1056,12 @@ addopts = "-m 'not slow'"     # default to fast-only
 
 ### Medium
 
-4. **WhisperX large-v3 MPS hangs.** Pre-wired timeout in `AsrJob.timeout_sec=900`. On hang, DLQ + status='failed' + manual replay path.
+4. **WhisperX large-v3 MPS hangs.** Pre-wired timeout in `AsrJob.timeout_sec=1800`. On hang, DLQ + status='failed' + manual replay path.
 5. **ffmpeg dependency.** Listed as host requirement (§7). Test in week-5 step 22 RED before any GREEN frame code.
 6. **DeepInfra rate limits.** Bakeoff #2 issues ~240 calls per generator candidate. Provider abstraction has exponential-backoff retry (§6).
 7. **LangGraph state-shape lock-in.** Per ADR 001, refactoring node signatures later is friction. Mitigation: keep `AgentState` keys minimal in v1; add via TypedDict `total=False` so optional fields are non-breaking.
+8. **Per-query DeepInfra cost from live `make answer` traffic.** Per query: Plan (deterministic = $0, or LLM cheap_extraction ≈ $0.0003), Verify ≈ $0.0006 per iteration (up to 2 iterations worst case), Generate ≈ $0.0009. **Per-query total: $0.001–0.002.** ADR 004 v3.1's $18–33 12-week budget was computed for bakeoff traffic only (3 generators × 80 examples × ~10 cycles); it did NOT include continuous demo traffic. If `make answer` enters routine use (>50 queries/day sustained), revisit the cost ceiling: either rate-limit, cache by query hash, or amend ADR 004 with a separate demo-traffic budget line.
+9. **Tuning fixed_window by vibes.** `window_sec=30.0` and `overlap_sec=5.0` are defaults grounded in the BGE-M3 token-budget arithmetic, NOT in eval scores. Resisting the urge to "just try 45s windows because they feel better" matters — those scores belong to the phase-2 chunking ablation, not to mid-week-4 intuition. See §10 chunker discipline.
 
 ### Low
 
@@ -907,11 +1073,19 @@ addopts = "-m 'not slow'"     # default to fast-only
 
 ## 10. Intentionally deferred
 
-Hold the line against folding these in early:
+Hold the line against folding these in early.
 
-**Phase 2 (weeks 6–8):**
+### Chunker discipline — fixed_window is the v1 baseline, not the final answer
+
+`fixed_window` is the right phase-1 strategy: deterministic, heavily tested, fast to implement, and a clean baseline for the phase-2 chunking ablation. Three principles to hold:
+
+1. **Keep the chunker registry from day one.** `chunking/__init__.py` exposes `get_chunker(name)` (§1). Phase 1 registers only `"fixed_window"`. Adding `"transcript_segment"`, `"slide_boundary"`, `"topic_llm"`, and `"hybrid"` in phase 2 is a one-line registry add per strategy — no surrounding refactor. The phase-2 eval runner picks via `--chunking <name>` CLI flag (per `.claude/CLAUDE.md` "Adding a new chunking strategy" workflow).
+2. **Don't tune fixed_window by vibes mid-week-4.** `window_sec=30.0` and `overlap_sec=5.0` are grounded in the BGE-M3 token-budget arithmetic (§9 risk 9), not in eval scores. The instinct to "try 45s windows because the synthesis example seems to need more context" must wait for the phase-2 chunking ablation, which holds all-other-variables-constant and reports per-strategy numbers. Mid-flight intuition tuning corrupts the ablation by changing two things at once.
+3. **The methodology writeup needs all 5 strategies.** The chunking ablation MDX (`eval/reports/<date>_chunking_ablation/methodology.mdx`) is the resume artifact. Publishing it on fixed_window alone is unpublishable — there's no comparison. Phase 2 must add the other 4 before any numbers ship.
+
+### Phase 2 (weeks 6–8):
 - **Corpus expansion to ~30–50 verified examples (currently 11).** Required as a prefix to bakeoff #1, because the ADR 004 selection rule's 3pp tie-break rounds to <1 example at n=11. Eats roughly week-5 spillover or carves into week-6 budget.
-- Other chunking strategies (`transcript_segment`, `slide_boundary`, `topic_llm`, `hybrid`).
+- Other chunking strategies (`transcript_segment`, `slide_boundary`, `topic_llm`, `hybrid`). Added to the chunker registry, not as new modules outside it.
 - Topic-LLM chunker (requires `cheap_extraction` selection per ADR 004).
 - Generator + judge bakeoff runner (uses `minimal_generation` directly; does NOT route through LangGraph to isolate generator confounds).
 - Chunking ablation runner.
@@ -944,7 +1118,25 @@ Hold the line against folding these in early:
 
 ---
 
-## 11. Plan-review findings closed (rev 2)
+## 11. Plan-review findings closed
+
+### Rev 3 findings (second `/cdf:plan-review` pass)
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| 6 | High | `load_bakeoff_winner_or_default()` returned the first YAML candidate when no bakeoff existed — a silent model default, violating ADR 004 v3.1. | Renamed to `load_bakeoff_winner_or_raise()`. Pre-bakeoff, `answer()` and `make answer` require explicit `GENERATOR=...`. Post-bakeoff, the locked winner auto-resolves. `BakeoffNotYetRunError` documented with copy-pasteable fix message. §5. |
+| 7 | High | Same silent-default risk applied to Verify (judge candidate) and Plan (cheap-extraction candidate). | Verify: `judge_candidate` added to `AgentState`, required from `answer()`, also auto-resolves post-bakeoff. Cross-family enforced (`CrossFamilyViolationError`) whenever both generator and judge are present. Plan: gains a **deterministic non-LLM path** (heuristic single_clip/synthesis classification + sub_queries=[query]) which is the default; explicit `PLANNER=...` engages the LLM path. No silent LLM default anywhere. §5. |
+| 8 | High | Fan-out step completion semantics under-specified — how `embed_text`/`embed_frames` jobs get enqueued and how completion is detected. | Spelled out in §3 "Fan-out step semantics": chunk worker does transactional enqueue of N children + N status rows; completion when `count(completed children) == count(parent rows)`. Implementer cannot get this wrong by accident anymore. |
+| 9 | Medium | `minimal_generation` parser and LangGraph generate-node parser could drift, making bakeoff vs LangGraph comparison measure different things. | Single `parse_generation_output()` in `generate/parser.py`, imported by both code paths. §6, §8 step 29. |
+| 10 | Medium | Dockerfile.postgres approach not gated as a fail-fast check; if `postgresql-16-pgmq` apt package missing, would discover late. | Step 2 made a **GREEN-blocking gate**: `make db-build && db-verify-ext` must succeed before any further work; Tembo fallback is documented. §8 step 2. |
+| 11 | Medium | Trace spans storing full chunk text in jsonb wastes ~10× storage. | Spans store `chunk_ids: list[int]`; trace viewer (phase 4) joins `chunks` for display. §5, §9 risk 9. |
+| 12 | Low | Catastrophic rerank regression (e.g., reverse-order bug) had no CI gate after rerank quality moved to artifact-logging. | Added `test_rerank_smoke.py::test_known_gold_chunk_in_top_5` — tight single-example assertion. §8 step 26. |
+| 13 | Low | Verify confidence threshold hardcoded to 0.6 — phase-3 tuning would need code edits. | Threshold from `LENSGRAPH_VERIFY_CONFIDENCE_THRESHOLD` env var, default 0.6. §5. |
+| 14 | Low | `AsrJob.timeout_sec=900` borderline-tight for a 60-min talk at 5–10× real-time on MPS. | Default raised to 1800 (30 min). §3. |
+| 15 | Low | Caption quality probe heuristic unspecified; ASR run/skip decision would be invented per implementer. | Explicit thresholds: `words_per_sec < 1.0` or `placeholder_ratio > 0.30` → rerun. §3. |
+| 16 | Low | CI runs `validate-evals` + `lint` only; rev 2 added `make test` (fast tests) but didn't wire it. | CI runs `make test` between validate-evals and lint. §7. |
+
+### Rev 2 findings (first `/cdf:plan-review` pass)
 
 | # | Severity | Finding | Resolution |
 |---|---|---|---|
@@ -956,16 +1148,18 @@ Hold the line against folding these in early:
 
 ---
 
-## 12. Plan-review hooks — knowingly traded dimensions (for re-run)
+## 12. Plan-review hooks — knowingly traded dimensions
 
-- **Product.** Week-5 artifact is now a working `make answer QUERY="..."` end-to-end through LangGraph with trace persistence. **There IS a demo at end of week 5** — text-only, no UI, but a working agent loop with citations. Trade vs rev 1: more code in phase 1, less invention in phase 3. Justified by removing the architecture/implementation contradiction.
-- **Engineering.** Two ecosystem bets sit on the critical path: pgvector sparsevec + custom Postgres image (week 3) and ColQwen2.5 MPS (week 5). Build sequence puts them where failure surfaces early enough to recover without cascading. LangGraph node-signature lock-in is real (ADR 001 con) — kept `AgentState` minimal and TypedDict-flexible to delay the pain.
-- **UX/DX.** Fresh-laptop setup is now **45–60 min** of model downloads + Docker build + Postgres spin-up. `make models-warm` lets the user kick this off during a coffee break instead of mid-debug. Logs land at `LENSGRAPH_LOG_PATH`.
-- **Risk.** Pre-wired: WhisperX timeout, ffmpeg dependency, provider retry. NOT pre-wired but flagged: HNSW `ef_search` tuning (deferred to phase 2). LangGraph state evolution risk (deferred to "keep AgentState lean").
-- **Execution readiness.** Step count grew from 31 to 35 with LangGraph in scope. At 6–10 h/week the budget for 3 weeks is 18–30 h; the new plan is ~32 h. **Week 5 will spill into week 6 by ~2–4 hours.** This is acknowledged, not denied. Phase 2 still starts at "harness + answer() both ship," not at a calendar date.
+- **Product.** Week-5 artifact is a working `make answer QUERY="..." GENERATOR=... JUDGE=..."` end-to-end through LangGraph with trace persistence. There IS a demo at end of week 5 — text-only, no UI, but a working agent loop with citations. Trade vs rev 1: more code in phase 1, less invention in phase 3. Pre-bakeoff, every invocation must name the generator and judge explicitly; this is a deliberate friction to prevent silent ADR-004 violations.
+- **Engineering.** Two ecosystem bets sit on the critical path: pgvector sparsevec + custom Postgres image (week 3, gated as a hard GREEN-block) and ColQwen2.5 MPS (week 5). Build sequence puts them where failure surfaces early enough to recover without cascading. LangGraph node-signature lock-in is real (ADR 001 con) — kept `AgentState` minimal and TypedDict-flexible to delay the pain. Cross-family enforcement is now a runtime invariant, not a checklist item.
+- **UX/DX.** Fresh-laptop setup is **45–60 min** of model downloads + Docker build + Postgres spin-up. `make models-warm` lets the user kick this off during a coffee break. Logs land at `LENSGRAPH_LOG_PATH`. Pre-bakeoff `make answer` requires `GENERATOR=...` and `JUDGE=...` — the `BakeoffNotYetRunError` message tells the user exactly what to type. Post-bakeoff the CLI auto-resolves and only `QUERY` is required.
+- **Risk.** Pre-wired: WhisperX timeout (1800s), ffmpeg dependency, provider retry, cross-family enforcement, deterministic Plan fallback, fan-out completion semantics. NOT pre-wired but flagged: HNSW `ef_search` tuning (deferred to phase 2), trace tail-sampling (deferred to v2), `make answer` rate-limit at >50 queries/day (revisit ADR 004 cost ceiling).
+- **Execution readiness.** Step count grew from 31 (rev 1) to 35 (rev 2/3) with LangGraph in scope. **Honest budget: 30–35 h.** At 6–10 h/week this is ~3.5 weeks, not 3 — plan for week-5 work to spill into week 6 by 5–8 hours. Phase 2 still starts at "harness + answer() both ship," not at a calendar date.
 
 ---
 
 ## 13. What ships before any of this
 
-`/cdf:plan-review` re-run against this rev 2 doc. On approval, week-3 RED tests land FIRST. No GREEN code touches `ingest/chunking/retrieve/generate/api/web` until each RED test exists for that scope AND `make phase0-gate` is still green at the commit boundary. Per CLAUDE.md hard rule 1.
+`/cdf:plan-review` re-run against this rev 3 doc. On approval, week-3 RED tests land FIRST. No GREEN code touches `ingest/chunking/retrieve/generate/api/web` until each RED test exists for that scope AND `make phase0-gate` is still green at the commit boundary. Per CLAUDE.md hard rule 1.
+
+**Honest budget.** 30–35 h of work into a 6–10 h/week pace. Plan for ~3.5 weeks (some week-6 spillover acceptable) rather than a tight 3. Don't compress by cutting test coverage — the RED tests are what make the GREEN code defensible during phase-2 bakeoffs.
