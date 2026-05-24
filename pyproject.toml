@@ -24,3 +24,7 @@ ignore = ["E501"]  # line length handled by formatter
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["eval/tests"]

@@ -5,16 +5,16 @@
 
 - video_id: nXafozNIk3c
   title: "Google's Agents CLI is here: Build, eval, and deploy AI agents in minutes"
-  speaker: "Google Cloud Tech"
+  speaker: "Shubam Sabu (Google Cloud)"
   url: "https://www.youtube.com/watch?v=nXafozNIk3c"
   duration_sec: 3179
-  format_tags: [code_heavy, live_demo]
+  format_tags: [code_heavy, live_demo, conversational]
   license: youtube_standard
   captions_source: youtube_auto
   transcript_path: "transcripts/ai_engineering_v0/nXafozNIk3c.en.vtt"
   transcript_sha256: "59f42a89e771a372504c8d3384b84c5bec017f4cb22ef41b28f7a4e61b2d3daa"
   accessed_at: "2026-05-24T08:24:43Z"
-  notes: "2026 non-AI-Engineer source for build/eval/deploy agent workflow."
+  notes: "Agent Factory podcast episode hosted on Google Cloud Tech channel; Shubam Sabu (senior AI PM at Google) interviewed by Smitha. Substantive content is Shubam's."
 
 - video_id: aie_sg_2026_d2_arize_alyx
   source_video_id: m12vGjfbNlo
@@ -28,7 +28,7 @@
   license: youtube_standard
   captions_source: youtube_auto
   transcript_path: "transcripts/ai_engineering_v0/aie_sg_2026_d2_arize_alyx.en.vtt"
-  transcript_sha256: "09e755fb35a86d4d9c96cc01a2fa58469af0c6dcd96a806a382548757c3dcd27"
+  transcript_sha256: "84691f1784f265b914cb3868b0f570af5acaf1435bf8599143b0ef9c7ba6ff44"
   accessed_at: "2026-05-24T08:24:43Z"
   notes: "Chapter slice from AI Engineer Singapore Day 2 livestream."
 

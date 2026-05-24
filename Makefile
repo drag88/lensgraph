@@ -1,4 +1,4 @@
-.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate fmt lint clean
+.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean
 
 help:
 	@echo "LensGraph make targets:"
@@ -7,6 +7,7 @@ help:
 	@echo "  validate-evals-strict    same, but fail on missing transcript files (commit gate)"
 	@echo "  validate-self-test       only run fixture self-test (fast schema iteration)"
 	@echo "  phase0-gate              fail unless >= 10 verified non-negative examples across >= 2 talks (commit gate before implementation code)"
+	@echo "  test                     run pytest under eval/tests/"
 	@echo "  fmt                      ruff format"
 	@echo "  lint                     ruff check"
 
@@ -24,6 +25,9 @@ validate-self-test:
 
 phase0-gate:
 	uv run python eval/validate.py --strict --min-gold 10 --min-talks 2
+
+test:
+	uv run pytest eval/tests/ -q
 
 fmt:
 	uv run ruff format .

@@ -20,6 +20,13 @@ TIMESTAMP_RE = re.compile(
     r"(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})(?P<settings>.*)"
 )
 
+# Inline word-level karaoke tags YouTube emits inside cue payloads, e.g.
+# `Good<00:08:36.560><c> morning</c>`. These carry source-livestream offsets
+# that the cue-header rebase does not touch, so a chapter slice would end up
+# internally inconsistent. They are display-only and safe to strip.
+INLINE_TIMESTAMP_RE = re.compile(r"<\d{2}:\d{2}:\d{2}\.\d{3}>")
+CUE_CLASS_RE = re.compile(r"</?c(?:\.[^>]+)?>")
+
 
 def parse_time(ts: str) -> float:
     hours, minutes, seconds = ts.split(":")
@@ -32,6 +39,12 @@ def format_time(total_seconds: float) -> str:
     minutes, rem = divmod(rem, 60_000)
     seconds, millis = divmod(rem, 1000)
     return f"{hours:02}:{minutes:02}:{seconds:02}.{millis:03}"
+
+
+def strip_inline_tags(payload: str) -> str:
+    payload = INLINE_TIMESTAMP_RE.sub("", payload)
+    payload = CUE_CLASS_RE.sub("", payload)
+    return payload
 
 
 def clip_block(block: str, start_sec: float, end_sec: float) -> str | None:
@@ -50,7 +63,8 @@ def clip_block(block: str, start_sec: float, end_sec: float) -> str | None:
         f"{format_time(clipped_start)} --> {format_time(clipped_end)}"
         f"{match.group('settings')}"
     )
-    return TIMESTAMP_RE.sub(new_timing, block, count=1)
+    rebased = TIMESTAMP_RE.sub(new_timing, block, count=1)
+    return strip_inline_tags(rebased)
 
 
 def clip_vtt(source: str, start_sec: float, end_sec: float) -> str:
