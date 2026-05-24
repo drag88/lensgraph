@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lensgraph.dev/schemas/boundary_audit.schema.json",
+  "title": "LensGraph Boundary Audit Record",
+  "description": "Pairs LLM-judge and human scores for the same system-produced clip. Used to compute judge-human agreement (Cohen's kappa) per chunking strategy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "example_id",
+    "chunking_strategy",
+    "system_clip",
+    "judge_score",
+    "human_score",
+    "auditor",
+    "audited_at"
+  ],
+  "properties": {
+    "example_id": {
+      "type": "string",
+      "description": "Foreign key into a gold example id."
+    },
+    "chunking_strategy": {
+      "enum": [
+        "fixed_window",
+        "transcript_segment",
+        "slide_boundary",
+        "topic_llm",
+        "hybrid"
+      ]
+    },
+    "system_clip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_sec", "end_sec"],
+      "properties": {
+        "start_sec": { "type": "number", "minimum": 0 },
+        "end_sec": { "type": "number", "minimum": 0 },
+        "video_id": { "type": "string" }
+      }
+    },
+    "judge_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edge_sensibility", "standalone"],
+      "properties": {
+        "edge_sensibility": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "standalone": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "rationale": { "type": "string" }
+      }
+    },
+    "human_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edge_sensibility", "standalone"],
+      "properties": {
+        "edge_sensibility": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "standalone": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "notes": { "type": "string" }
+      }
+    },
+    "auditor": { "type": "string", "minLength": 1 },
+    "audited_at": { "type": "string", "format": "date-time" }
+  }
+}

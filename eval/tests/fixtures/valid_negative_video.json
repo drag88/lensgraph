@@ -1,0 +1,15 @@
+{
+  "id": "fixture_negative_video_001",
+  "question": "Does this speaker quote specific dollar costs per million tokens for inference?",
+  "video_id": "abc123",
+  "split": "dev",
+  "question_type": "negative",
+  "negative_scope": "video",
+  "expected_answer": null,
+  "abstention_expected": true,
+  "modality": ["transcript"],
+  "difficulty": "medium",
+  "verified": true,
+  "curator": "fixture",
+  "curated_at": "2026-05-24T10:00:00Z"
+}

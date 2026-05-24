@@ -1,0 +1,19 @@
+{
+  "id": "fixture_invalid_001",
+  "question": "How do speakers A and B disagree about semantic chunking in production RAG?",
+  "split": "dev",
+  "question_type": "synthesis",
+  "gold_spans": [
+    { "start_sec": 100, "end_sec": 150, "video_id": "video_a" },
+    { "start_sec": 200, "end_sec": 260 }
+  ],
+  "expected_claims": [
+    "Speaker A argues fixed-window chunking is sufficient.",
+    "Speaker B counters that semantic chunking is required."
+  ],
+  "modality": ["transcript"],
+  "difficulty": "hard",
+  "verified": true,
+  "curator": "fixture",
+  "curated_at": "2026-05-24T10:00:00Z"
+}

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lensgraph.dev/schemas/talk.schema.json",
+  "title": "LensGraph Talk Record",
+  "description": "Owns transcript provenance. Examples reference talks by video_id; talks own captions_source, transcript_path, transcript_sha256.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "video_id",
+    "title",
+    "speaker",
+    "url",
+    "duration_sec",
+    "format_tags",
+    "license",
+    "captions_source",
+    "transcript_path",
+    "transcript_sha256",
+    "accessed_at"
+  ],
+  "properties": {
+    "video_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "YouTube ID or other stable identifier."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "speaker": { "type": "string", "minLength": 1 },
+    "url": { "type": "string", "format": "uri" },
+    "duration_sec": { "type": "integer", "minimum": 1 },
+    "format_tags": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "slides_heavy",
+          "code_heavy",
+          "whiteboard",
+          "conversational",
+          "narrative",
+          "panel",
+          "lightning",
+          "live_demo"
+        ]
+      }
+    },
+    "license": {
+      "type": "string",
+      "description": "Free-form license note. Examples: 'youtube_standard', 'CC-BY-4.0', 'fair_use_research'."
+    },
+    "captions_source": {
+      "enum": [
+        "youtube_auto",
+        "youtube_manual",
+        "whisperx_large_v3",
+        "manual_transcript"
+      ]
+    },
+    "transcript_path": {
+      "type": "string",
+      "description": "Relative path from project root, e.g. transcripts/zjkBMFhNj_g.vtt."
+    },
+    "transcript_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA256 of transcript_path contents at curation time. Validator can re-hash and warn on drift."
+    },
+    "accessed_at": { "type": "string", "format": "date-time" },
+    "notes": { "type": "string" }
+  }
+}

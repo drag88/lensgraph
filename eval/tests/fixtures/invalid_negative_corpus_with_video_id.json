@@ -1,0 +1,15 @@
+{
+  "id": "fixture_invalid_003",
+  "question": "What does any speaker say about implementing OAuth2 flows in Rust with axum?",
+  "video_id": "should_not_be_here_for_corpus_negative",
+  "split": "dev",
+  "question_type": "negative",
+  "negative_scope": "corpus",
+  "expected_answer": null,
+  "abstention_expected": true,
+  "modality": ["transcript"],
+  "difficulty": "medium",
+  "verified": true,
+  "curator": "fixture",
+  "curated_at": "2026-05-24T10:00:00Z"
+}

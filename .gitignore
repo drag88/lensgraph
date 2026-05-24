@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# Env
+.env
+.env.local
+
+# Transcripts (do not redistribute upstream content)
+transcripts/*
+!transcripts/.gitkeep
+
+# Eval reports — keep methodology, keep small report JSON, ignore raw traces
+eval/reports/**/raw/
+eval/reports/**/traces/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

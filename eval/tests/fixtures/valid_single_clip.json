@@ -1,0 +1,17 @@
+{
+  "id": "fixture_single_clip_001",
+  "question": "What is the speaker's main argument for using evals before shipping a RAG system?",
+  "video_id": "abc123",
+  "split": "dev",
+  "question_type": "single_clip",
+  "gold_spans": [{ "start_sec": 100, "end_sec": 150 }],
+  "expected_claims": [
+    "Evals catch regressions that vibes-based testing misses entirely.",
+    "Evals enable comparison between different system versions."
+  ],
+  "modality": ["transcript"],
+  "difficulty": "easy",
+  "verified": true,
+  "curator": "fixture",
+  "curated_at": "2026-05-24T10:00:00Z"
+}

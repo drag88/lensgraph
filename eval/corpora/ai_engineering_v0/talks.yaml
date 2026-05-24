@@ -1,0 +1,10 @@
+# Talks indexed in the ai_engineering_v0 corpus.
+# Each entry is validated against eval/schemas/talk.schema.json.
+# transcript_sha256 is the SHA256 of the file at transcript_path at curation time.
+# Run `make validate-evals` after adding a talk.
+
+# Example entry below is illustrative only — replace with real ingested talks during curation phase.
+# The validator will fail this until transcripts/zjkBMFhNj_g.vtt exists with the matching SHA.
+# Remove the example or update once curation starts.
+
+[]
