@@ -20,6 +20,8 @@ Multimodal video RAG over engineering conference talks. Eval-first; the eval har
 
 7. **`verified: true` is sacred.** Never flip `verified: true` on an example without watching the actual clip. The validator gates committed corpora on this field.
 
+8. **Run `make validate-evals-strict` before any commit that touches `eval/`.** The default `validate-evals` is the CI gate and is lenient on missing transcript files (transcripts are gitignored). The `-strict` target fails on missing transcripts and is the local commit gate. CI cannot enforce this — discipline is on you.
+
 ## Conventions
 
 - Python ≥ 3.11, `uv` for env, `ruff` for format + lint, line length 100.

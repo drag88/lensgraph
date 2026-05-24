@@ -33,7 +33,9 @@ The story on the resume is:
 
 ```bash
 uv sync
-make validate-evals     # validates schemas + corpora + runs self-test fixtures
+make validate-evals            # schemas + corpora + fixture self-test (CI gate)
+make validate-evals-strict     # also fails on missing transcript files (commit gate)
+make validate-self-test        # only run fixture self-test (fast schema iteration)
 ```
 
 ## License

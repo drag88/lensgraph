@@ -48,11 +48,24 @@ eval/
 ## Running validation
 
 ```bash
-make validate-evals       # validate schemas, corpora, cross-references
-make validate-self-test   # run fixture tests proving schema rules
+make validate-evals           # corpora + cross-refs + fixture self-test (CI gate)
+make validate-evals-strict    # also fails on missing transcript files (commit gate)
+make validate-self-test       # only fixture self-test (fast schema iteration)
 ```
 
-The self-test is the "is the schema doing what I claim it is" check. Every conditional rule (e.g. "synthesis must have per-span video_id") has a corresponding `invalid_*.json` fixture that the schema must reject.
+`validate-evals` runs both corpora validation AND the fixture self-test by default — a single command covers both data drift and schema regressions.
+
+The self-test is the "is the schema doing what I claim it is" check. Every conditional rule (e.g. "synthesis must have per-span video_id", "end_sec must exceed start_sec", "curated_at must be RFC3339") has a corresponding `invalid_*.json` fixture that the validator must reject.
+
+### What is enforced beyond JSON Schema
+
+JSON Schema 2020-12 cannot express cross-field constraints (e.g. `end_sec > start_sec`) or activate `format` keywords automatically. The validator wires both:
+
+- `FormatChecker` is attached so `date-time` and `uri` formats are actually validated (requires `jsonschema[format-nongpl]` extra, declared in `pyproject.toml`).
+- Span ranges (`end_sec > start_sec`) are checked in Python after schema validation, for both `gold_spans` and `boundary_audit.system_clip`.
+- `verified: true` is required for any example committed to a corpus file.
+- `video_id` references in examples must exist in the corpus's `talks.yaml` — no exception when `talks.yaml` is empty.
+- In `--strict` mode, missing transcript files on disk fail (not warn).
 
 ## Adding examples
 

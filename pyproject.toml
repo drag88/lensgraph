@@ -5,7 +5,7 @@ description = "Multimodal video RAG over engineering conference talks. Eval-firs
 authors = [{ name = "Aswin Sreenivas" }]
 requires-python = ">=3.11"
 dependencies = [
-    "jsonschema>=4.20",
+    "jsonschema[format-nongpl]>=4.20",
     "pyyaml>=6.0",
 ]
 

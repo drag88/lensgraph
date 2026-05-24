@@ -1,0 +1,14 @@
+{
+  "id": "fixture_invalid_013",
+  "question": "What is the speaker's main argument for using evals before shipping?",
+  "video_id": "abc123",
+  "split": "dev",
+  "question_type": "single_clip",
+  "gold_spans": [{ "start_sec": 100, "end_sec": 150 }],
+  "expected_claims": ["Evals catch regressions that vibes-based testing misses entirely."],
+  "modality": ["transcript"],
+  "difficulty": "easy",
+  "verified": true,
+  "curator": "fixture",
+  "curated_at": "not-a-date"
+}
