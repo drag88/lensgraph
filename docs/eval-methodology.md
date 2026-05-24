@@ -55,9 +55,20 @@ If `slide-required` recall does not exceed `transcript-only` baseline once ColPa
 
 ## Judge discipline
 
-- **Cross-family.** If Anthropic models drafted curation candidates, OpenAI models are the judge; and vice versa.
+- **Cross-family.** The judge must be in a different model family from the generator. See ADR 004 v3 for the candidate set and the empirical basis (ICLR 2026 "Preference Leakage" paper).
 - **Versioned prompts.** Every judge prompt lives in `eval/runners/judges/` and is hashed; the hash is logged with every run.
 - **Human override.** Boundary judge requires a 20–30 example manual audit. If kappa < 0.6, the LLM judge is not trustworthy and needs a rubric revision before any chunking comparison is published.
+
+## Selection rule
+
+Per ADR 004 v3, model selection for every component obeys one rule:
+
+> Pick the cheapest candidate whose eval score is within 3pp of the leader AND meets all per-component minimums.
+
+This is what the bakeoff in roadmap phase 2 produces. Two consequences worth stating:
+
+1. **No model is the project's "default" until the bakeoff runs.** Statements like "we use Gemma" are forbidden in any artifact dated before the bakeoff results commit.
+2. **The runner-up and the cost differential are part of the writeup, not footnotes.** The interview story is "I built the selection process," not "I picked the right model."
 
 ## Anti-contamination rules
 

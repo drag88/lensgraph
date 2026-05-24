@@ -25,17 +25,20 @@ Goal: end-to-end pipeline working with the simplest possible chunking and retrie
 
 **Exit gate:** baseline TimestampRecall@3 on `dev_gold` is reported. No tuning yet.
 
-## Phase 2 — Chunking ablation (weeks 6–8)
+## Phase 2 — Bakeoffs (weeks 6–8)
 
-Goal: the centerpiece artifact.
+Goal: two centerpiece artifacts — the model bakeoff and the chunking ablation. Both apply the same eval-driven selection discipline.
 
 | Week | Deliverable |
 |---|---|
-| 6 | Implement transcript_segment + slide_boundary chunkers. Wire chunking strategy as a CLI flag. |
-| 7 | Implement topic_llm + hybrid chunkers. Run all five on `dev_gold`. |
-| 8 | Boundary audit (manual scoring of 20–30 examples). Kappa report. Publish `chunking_ablation/methodology.mdx`. |
+| 6 | **Generator + judge bakeoff** (ADR 004 v3 selection rule). Pin retrieval + chunking variables; vary only the generator candidate (Gemma 4 31B / Qwen3-235B / DeepSeek V3.2). Judge calibration on 20 manual boundary scores per judge candidate. Publish `eval/reports/<date>_generator_bakeoff/methodology.mdx`. Lock winner. Estimated cost: <$2. |
+| 6 | Implement transcript_segment + slide_boundary chunkers. Wire chunking strategy as CLI flag. |
+| 7 | Implement topic_llm + hybrid chunkers. Run all five on `dev_gold` with the locked generator + judge. |
+| 8 | Boundary audit (20–30 manual scores) for the chunking ablation. Publish `eval/reports/<date>_chunking_ablation/methodology.mdx`. |
 
-**Exit gate:** five-strategy comparison published with kappa ≥ 0.6 on boundary audit.
+**Exit gates (both must hold):**
+- Generator bakeoff: winner meets every minimum in ADR 004; runner-up and cost differential documented.
+- Chunking ablation: five-strategy comparison published with judge-human kappa ≥ 0.6.
 
 ## Phase 3 — Agent loop + answer tier (weeks 9–10)
 

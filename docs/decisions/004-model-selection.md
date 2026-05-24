@@ -1,95 +1,122 @@
-# ADR 004 — Model selection: local vs API per component
+# ADR 004 — Model selection: candidate set + eval-driven selection rule
 
-**Status:** Accepted
-**Date:** 2026-05-24 (revised same day after May 2026 model-landscape research)
-**See:** Changelog at bottom for the original closed-API-default version superseded by this one.
+**Status:** Accepted (v3, 2026-05-24)
+**Supersedes:** v1 (closed-API default) and v2 (Gemma-as-default). See Changelog.
 
 ## Context
 
-LensGraph runs eight model-shaped components: ASR, text embeddings, visual document retrieval (ColPali-style), reranking, planner LLM, generator LLM, cheap-extraction LLM, and a cross-family LLM judge. Each can plausibly run locally, via an open-weight hosted API, or via a closed-frontier API. Picking ad hoc leads to inconsistent latency, runaway cost, and same-family judge contamination.
+A project whose thesis is "the eval is the product" must not pick its production models by vibe. Declaring a winner before the eval exists is the same failure mode the rest of the codebase is built to prevent.
 
-Two May 2026 facts force a re-think of the original closed-API-default proposal:
+Two facts force this rewrite of v2:
 
-1. **Gemma 4 (Google, released April 2, 2026) scores 86.4% on τ2-bench Retail agentic tool use** and ranks #3 open model on Arena — closing most of the agentic gap to GPT-5.5 Pro (90.1) and Claude Sonnet 4.6. Apache 2.0, native function calling, native multimodal.
-2. **DeepInfra prices Llama-class open-weight inference at ~$0.12/$0.30 per MTok** — roughly 30× cheaper than Claude Sonnet 4.6 and 8× cheaper than GPT-4.1. Together AI is ~4× more expensive than DeepInfra for the same models; Groq leads on latency but not cost.
-3. **ICLR 2026 "Preference Leakage" paper** formalized cross-family judge contamination: a judge inflates outputs from its own family by 5–7%, including via "inheritance relationships." This is now empirically documented, not anecdotal.
+1. **The model field is moving weekly.** Gemma 4 dropped 7 weeks ago. Qwen3-235B-A22B-Instruct is listed on DeepInfra at ~$0.07/$0.10 per MTok — roughly half the price of Gemma 4 31B. DeepSeek V3.2 is in the same competitive band. Any single-model default is stale by week 6.
+2. **The right answer is the cheapest model that clears the eval.** Not the most capable. Not the most popular. The cheapest one that meets the published thresholds on the locked test set.
 
-Hardware assumption: Apple Silicon Mac (M-series, 16+ GB unified memory). Anything requiring a dedicated NVIDIA GPU runs on Modal serverless instead of locally.
+So v3 changes the shape of the decision: **a candidate set per component, plus a formal selection rule that operates on eval output.**
 
-## Decision matrix
+## The selection rule
 
-| Component | Where it runs | Specific model | Why |
-|---|---|---|---|
-| **ASR** (ingestion) | **Local** (MPS) | `WhisperX large-v3` | Batch job, ~3x realtime on M3. No per-minute cost. Quality matches API. |
-| **Text embeddings** | **API** | `voyage-3-large` (1024-dim) | Best-in-class retrieval embeddings; not open-weight; $0.18/MTok. No competitive open replacement. |
-| **Visual document retrieval** | **Local** (MPS) for dev, **Modal** for batch | `ColQwen2.5` via `colpali-engine` | Tops ViDoRe V2; +5 nDCG@5 over ColQwen2-v0.1; uses Qwen2.5-VL backbone. Fits MPS for query-time. No competitive hosted API exists. |
-| **Reranker** | **Local** (CPU) | `BAAI/bge-reranker-v2-m3` | ~560MB, ~50ms per 10 docs on CPU. Zero per-call cost. |
-| **Planner / Generator LLM** | **API** (open-weight hosted) | **`gemma-4-31b` on DeepInfra** | 86.4% on τ2-bench agentic; #3 open on Arena; 30× cheaper than Sonnet 4.6. Native function calling and JSON. |
-| **Cheap extraction LLM** (candidate question drafting, topic-chunker, claim decomposition) | **Local** (MPS) | **`gemma-4-e4b`** | Native multimodal 4B, Apache 2.0, fits comfortably in 16GB MPS. Free. Falls back to DeepInfra Gemma if quality insufficient. |
-| **LLM judge** (faithfulness, boundary) | **API** (open-weight hosted), **cross-family** | **`deepseek-v3` on DeepInfra** | Different model family from Gemma (generator), Claude, and GPT. Strongest anti-preference-leakage posture given the ICLR 2026 paper. ~8× cheaper than GPT-4.1. |
-| **Premium triangulation LLM** (run once on test_gold for the chunking ablation writeup) | **API** | `claude-sonnet-4-6` | One-time comparison so the published methodology reports both open-weight and frontier-API numbers. ~$3 one-off cost. |
+```
+For component K with candidate set C_K and price() function:
 
-## Provider keys
+  scores = { c: eval_score(c) for c in C_K }
+  best   = max(scores.values())
+  qualifying = { c for c in C_K
+                 if scores[c] >= best - 0.03
+                 and meets_minimums(c, K) }
+  chosen = argmin(price(c) for c in qualifying)
+```
 
-All API keys live in `.env` (template at `.env.example`):
+**Tie-break tolerance: 3 percentage points** below the leader counts as a tie. Within the tie, cheapest wins.
 
-- `DEEPINFRA_API_KEY` — generator, judge, and Gemma fallback
-- `VOYAGE_API_KEY` — embeddings
-- `ANTHROPIC_API_KEY` — premium triangulation run only
-- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` — observability for every model call
+**Per-component minimums:**
 
-`OPENAI_API_KEY` is no longer required for the default path. Retain in `.env.example` as optional for ad-hoc spot-checks.
+| Role | Minimum gates (all must hold) |
+|---|---|
+| Generator | ClaimsSupported ≥ 0.85, CitationAccuracy ≥ 0.85, JSON-parse success ≥ 0.98, corpus-negative RefusalRate ≥ 0.90, p95 generation latency ≤ 2.0s |
+| Judge | Cohen's kappa vs human boundary audit ≥ 0.60; must be in a different model family from the generator |
+| Cheap extraction | JSON-parse success ≥ 0.98 on chunker output; topic boundaries IoU ≥ 0.70 vs hand-segmented set |
+| Embeddings | TimestampRecall@5 on dev_gold ≥ 0.75 (vector channel only) |
+| Reranker | Top-3 reorder improves Recall@3 by ≥ 5pp over no-rerank baseline |
 
-## Cost ceiling (back-of-envelope, 12-week budget)
+A candidate that fails any minimum is disqualified regardless of score.
 
-| Cost driver | Estimate | Notes |
+## Candidate set per component
+
+| Role | Candidate set | Why these |
 |---|---|---|
-| Full eval run (Gemma 4 31B generation + DeepSeek-V3 judge across ~80 examples × 5 chunking strategies) | ~$0.50 | Run weekly during phases 2–3 = ~$4 total |
-| Topic-LLM chunking on full corpus (Gemma 4 E4B local) | $0 | Local on MPS, batch overnight if needed |
-| Voyage embeddings on full corpus | ~$5 | ~25M tokens × $0.18/MTok |
-| Voyage embeddings on query side over 12 weeks | ~$2 | Negligible |
-| Premium triangulation run (Claude Sonnet 4.6 once on test_gold) | ~$3 | One-time, for the writeup comparison |
-| Langfuse Cloud | $0 (free tier) | <50K events/month covered |
-| Modal GPU bursts (ColQwen2.5 ingest of 12 talks) | ~$8 | ~2 GPU-hours total |
-| **Total** | **~$25** | vs ~$110 under the previous closed-API-default plan |
+| **Planner / generator** | `gemma-4-31b` (DeepInfra) · `qwen3-235b-a22b-instruct` (DeepInfra) · `deepseek-v3.2` (DeepInfra) | Top three open-weight contenders for agentic tool use as of May 2026. All have native function calling and structured JSON. Wide price spread (5×) makes the selection rule meaningful. |
+| **Cheap extraction** | `gemma-4-e4b` (local MPS) · `qwen3-8b` (local MPS) · DeepInfra fallback to whatever-won-generator | Local first to keep cost at zero. Falls back to chosen hosted generator if local can't hit JSON-parse minimum. |
+| **LLM judge** | `deepseek-v3.2` (DeepInfra) · `qwen3-235b-a22b-instruct` (DeepInfra) · spot-check passes via `claude-sonnet-4-6` and `gpt-5.5` | Must be cross-family from chosen generator (anti-preference-leakage, ICLR 2026). If generator is Gemma → judge is Qwen or DeepSeek. If generator is Qwen → judge is DeepSeek or Gemma. Frontier APIs reserved for occasional triangulation. |
+| **Text embeddings** | `BAAI/bge-m3` (local) · `voyage-3-large` (API) · `gemini-embedding-2` (API) | Local BGE-M3 first — dense+sparse+multi-vector in one model, no per-call cost. Upgrade to Voyage or Gemini only if eval shows BGE-M3 underperforming. Embeddings are one-time, so keeping infra simple wins. |
+| **Visual document retrieval** | `ColQwen2.5` via `colpali-engine` (local MPS / Modal) · `gemini-embedding-2` as single-vector baseline | ColQwen2.5 is current ViDoRe V2 leader and the portfolio-credible choice (late-interaction is a real engineering story). Gemini Embedding 2 retained as a single-vector baseline for the writeup. |
+| **Reranker** | `BAAI/bge-reranker-v2-m3` (local CPU) · hosted alternative if local latency > 80ms p95 | Local default; only swap if the latency budget breaks. |
+| **ASR** | `WhisperX large-v3` (local MPS) | No real contender for offline batch ASR on Mac. |
+| **Premium triangulation** (one-off on test_gold for the writeup) | `claude-sonnet-4-6` · `gpt-5.5` | Run once at the end. Costs ~$3 each. Lets the methodology report frontier-API numbers alongside the chosen open-weight stack. |
 
-If costs exceed $30/month sustained, the first action is to cap eval-run frequency to fortnightly, not to swap models.
+## DeepInfra pricing (verified May 2026)
 
-## Why not closed-frontier-API as default
+| Model | Input $/MTok | Output $/MTok |
+|---|---|---|
+| Qwen3-235B-A22B-Instruct | $0.071 | $0.10 |
+| Gemma 4 31B | $0.13 | $0.38 |
+| DeepSeek V3.2 | $0.32 | $0.89 |
+| Claude Sonnet 4.6 (Anthropic API) | $3.00 | $15.00 |
 
-The original ADR 004 v1 chose Claude Sonnet 4.6 as the default generator. Three months ago this was correct. As of May 2026 it is no longer correct because:
+The price spread between Qwen3 and Gemma is ~3×. Between Qwen3 and Sonnet is ~150×. This is why the selection rule matters: if Qwen3 lands within 3pp of Gemma on the eval, the project saves ~3× on every generation call.
 
-- **Gemma 4 31B's agentic gap to Sonnet 4.6 is ~3–4 percentage points** on τ2-bench, not 15–20pp. That gap is now within eval noise on an 80-example corpus.
-- **The cost gap is 30×.** A portfolio project that pays for frontier inference when a near-equivalent open-weight option costs pennies looks like it lacks cost discipline — the opposite of the interview story we want.
-- **Cross-family judge discipline is empirically required** (ICLR 2026 preference-leakage paper). Using Anthropic for both generation and judging — even with different model SKUs — exhibits the inheritance-relationship contamination the paper identifies. An open-weight judge in a third family is now the rigorous default.
-- **Triangulation is still possible.** One spot-run with Claude Sonnet 4.6 on the locked test set, costing ~$3, gives the methodology writeup a "we tested both and shipped the cheaper option with the gap quantified" story — which is a much stronger interview answer than "we picked Claude."
+## The bakeoff (roadmap phase 2, week 6)
 
-## Why not local everything
+1. Pin all retrieval/rerank/judge variables. Vary only the generator candidate.
+2. Run the full dev_gold eval against each candidate. Log per-example traces in Langfuse with `candidate=<name>`, `git_sha`, and `judge=<name>`.
+3. Run the judge calibration audit (20 manual boundary scores) for each judge candidate. Pick the cheapest judge that hits kappa ≥ 0.60.
+4. Apply the selection rule. Publish the table in `eval/reports/<date>_generator_bakeoff/methodology.mdx`.
+5. Lock the winner into `pyproject.toml` config. Document the runner-up and the cost differential so the writeup can show what the project saved by running the bakeoff.
 
-Tempting because zero cost. Rejected because:
+Estimated bakeoff cost: **under $2 total** (3 generators × 80 dev examples + judge passes). Cheaper than one round of manual prompt-tuning at frontier-API prices.
 
-- **Voyage / Anthropic / DeepInfra-hosted-Gemma-31B quality** at the agentic generator role meaningfully exceeds what fits on 16GB MPS. The eval would measure my local inference setup, not the system design.
-- **Cross-family judge discipline** requires the judge to be in a different family from the generator. DeepSeek-V3 via DeepInfra is cheap and separates families cleanly.
-- **Demo legibility.** A recruiter clicking the live demo wants sub-2s responses. DeepInfra at 79–258 TPS on Gemma 4 31B meets that bar; local Mac MPS at 31B parameters does not.
+## Cost ceiling (12-week budget, revised)
 
-## Why not API everything
+Cannot be predicted precisely until the bakeoff runs. Bounded estimates:
 
-Tempting because simplicity. Rejected because:
+| Cost driver | Low (Qwen3 wins) | High (Gemma wins, Sonnet triangulation) |
+|---|---|---|
+| Eval runs through phase 2-3 (~10 cycles, 80 examples × ~5K tokens out) | ~$0.50 | ~$5 |
+| Judge passes across eval cycles | ~$2 | ~$8 |
+| Bakeoff (one-time, generator + judge selection) | ~$2 | ~$2 |
+| Topic-LLM chunking on full corpus (local) | $0 | $0 |
+| Embeddings (BGE-M3 local if it qualifies) | $0 | ~$5 (if Voyage needed) |
+| Premium triangulation (one run, two frontier models) | ~$5 | ~$5 |
+| Modal GPU bursts (ColQwen2.5 ingest) | ~$8 | ~$8 |
+| **Total** | **~$18** | **~$33** |
 
-- **ColPali / ColQwen has no competitive hosted API** as of 2026-05. Local + Modal are the only options.
-- **WhisperX local is free and good.** Paying for hosted ASR on 500h of corpus is wasteful.
-- **Reranker calls per query** would dominate latency budget if pushed to an API on every retrieval; local BGE is ~5ms.
-- **Gemma 4 E4B local** is genuinely good at structured-extraction tasks and free. Pushing chunker calls to API for the convenience of not running a local model is leaving 10% of total budget on the table for no benefit.
+Both bounds are well under the ~$110 v1 estimate and the ~$25 v2 estimate. The selection rule is what makes the lower bound reachable.
+
+If sustained monthly spend exceeds $20, action is: cap eval cadence, not swap providers.
+
+## Why not single-model default
+
+v2 said "Gemma 4 31B is the default." That was premature because:
+
+- **No eval data exists yet** to justify the choice over Qwen3 or DeepSeek.
+- **The price spread is large enough that the difference matters.** A 3× cost gap is not noise; it is the difference between $33 and $18 over 12 weeks, and the difference between "I picked it" and "I selected it with data" in an interview.
+- **A bakeoff costs $2 and produces the strongest possible writeup section.** Skipping it for the convenience of locking in Gemma sooner is anti-thesis.
+
+## Why these specific candidates, not more
+
+Adding more candidates costs almost nothing in bakeoff dollars but a lot in cognitive load and reporting clarity. Three is enough to demonstrate the selection process. Adding a fourth (e.g. Mistral Large 2, GLM 5.1) is an explicit decision that needs justification beyond "more is more."
 
 ## Revisit when
 
-- An open-weight model passes Claude Sonnet 4.6 on τ2-bench (currently behind by ~3pp) → drop the premium triangulation step.
-- DeepInfra raises Gemma 4 31B pricing above $1/MTok output → re-shop providers (Together, Fireworks, Cerebras).
-- A first-party ColPali API ships with sub-200ms latency → drop the Modal dependency.
-- Total monthly API spend exceeds $30 for two consecutive months → tighten eval cadence before swapping providers.
+- A candidate not in the set ships and clearly beats the chosen winner on the published thresholds → add to the candidate set and re-run the bakeoff. Cost: $2.
+- BGE-M3 fails the embeddings minimum → promote Voyage / Gemini Embedding 2 from fallback to primary.
+- Total monthly API spend exceeds $20 for two consecutive months → tighten eval cadence first, then re-shop providers.
+- DeepInfra raises Qwen3 or Gemma pricing materially → re-shop (Together, Fireworks, Cerebras, Groq).
 
 ## Changelog
 
-**2026-05-24 (revised, same day):** Pivoted from closed-API default (Claude Sonnet 4.6 generator, GPT-4.1 judge) to open-weight default (Gemma 4 31B on DeepInfra generator, DeepSeek-V3 on DeepInfra judge, Gemma 4 E4B local extraction). Driven by Gemma 4's April 2, 2026 release closing the agentic gap to <4pp and DeepInfra pricing being 30× cheaper than frontier APIs. ICLR 2026 "Preference Leakage" paper makes the open-weight cross-family judge the rigorous default. Estimated 12-week budget drops from ~$110 to ~$25. Premium triangulation step (one Sonnet 4.6 run on test_gold) retained for the methodology writeup. ColPali/ColQwen2-v0.1 upgraded to ColQwen2.5 (drop-in, +5 nDCG@5).
+**2026-05-24 (v3):** Replaced single-model default with candidate-set + selection-rule. Added Qwen3-235B-A22B-Instruct as primary candidate (~3× cheaper than Gemma on DeepInfra). Switched embeddings primary to local BGE-M3 (was: Voyage). Added explicit per-component minimums and 3pp tie-break tolerance. Added bakeoff as a phase-2 roadmap deliverable. Estimated 12-week spend now bounded $18–$33.
 
-**2026-05-24 (original):** Initial ADR. Closed-API default. Now superseded above.
+**2026-05-24 (v2, superseded same day):** Pivoted from closed-API default to single-model open-weight default (Gemma 4 31B generator, DeepSeek-V3 judge, Gemma 4 E4B local extraction). Driven by Gemma 4's April release closing the agentic gap and DeepInfra's 30× pricing advantage. The single-model framing was wrong for a project whose thesis is eval-driven selection.
+
+**2026-05-24 (v1, superseded same day):** Initial ADR. Closed-API default (Claude Sonnet 4.6 generator, GPT-4.1 judge). Correct for a January-2026 worldview; obsolete after May 2026 research.

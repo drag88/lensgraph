@@ -47,7 +47,7 @@ Postgres + pgvector as the single source of truth, LangGraph as the agent loop, 
 
 **Cross-family LLM judge.** If Claude drafts curation candidates, GPT-4-class is the judge, and vice versa. Mitigates same-model bias in faithfulness scoring.
 
-**Specific models and local-vs-API per component:** see `docs/decisions/004-model-selection.md`. In short (post-May-2026-research): ASR + ColQwen2.5 + reranker + Gemma 4 E4B (extraction) run locally on Mac MPS / CPU; **Gemma 4 31B on DeepInfra** plans and generates; **DeepSeek-V3 on DeepInfra** is the cross-family judge (anti-preference-leakage); Voyage-3-large embeds; Modal handles burst GPU for ColQwen2.5 ingest. Claude Sonnet 4.6 retained for a one-off premium triangulation run on the locked test set. Estimated 12-week API spend: ~$25.
+**Specific models and local-vs-API per component:** see `docs/decisions/004-model-selection.md` (v3). The project does NOT lock a single-model default; it ships a candidate set per component and a formal selection rule that picks the cheapest candidate within 3pp of the leader on the locked eval thresholds. Generator candidates: Gemma 4 31B, Qwen3-235B-A22B-Instruct, DeepSeek V3.2 (all DeepInfra). Judge candidates: cross-family vs whichever generator wins. Embeddings: local BGE-M3 first. Visual retrieval: ColQwen2.5 via colpali-engine. ASR + reranker + cheap extraction run locally on Mac MPS/CPU. Claude Sonnet 4.6 and GPT-5.5 reserved for a one-off premium triangulation run on the locked test set. Estimated 12-week API spend: **~$18–$33** depending on bakeoff outcome.
 
 **Conference talks as launch corpus.** See `docs/decisions/003-conference-talks-corpus.md`.
 

@@ -18,7 +18,17 @@ Multimodal video RAG over engineering conference talks. Eval-first; the eval har
 
 6. **One agent framework.** LangGraph only. No LangChain core, no LlamaIndex. See `docs/decisions/001-langgraph-not-llamaindex.md`.
 
-6a. **Model selection follows ADR 004 (revised 2026-05-24 for open-weight default).** Gemma 4 31B on DeepInfra for generation/planning; Gemma 4 E4B local (Mac MPS) for cheap extraction; DeepSeek-V3 on DeepInfra as cross-family judge (anti-preference-leakage per ICLR 2026); Voyage-3-large for text embeddings; ColQwen2.5 (local/Modal) for visual document retrieval; WhisperX local for ASR; BGE-reranker-v2-m3 local for reranking. Claude Sonnet 4.6 is the one-off premium triangulation model only. Do not introduce a new model without an ADR amendment.
+6a. **Model selection follows ADR 004 v3: candidate set + selection rule, not single-model defaults.**
+   - Generator candidates: gemma-4-31b · qwen3-235b-a22b-instruct · deepseek-v3.2 (all DeepInfra).
+   - Judge candidates: deepseek-v3.2 · qwen3-235b-a22b-instruct (must be cross-family from chosen generator).
+   - Cheap extraction candidates: gemma-4-e4b · qwen3-8b local first; fall back to chosen hosted generator.
+   - Text embeddings: BAAI/bge-m3 local first; Voyage / Gemini Embedding 2 only if BGE-M3 fails the embeddings minimum.
+   - Visual retrieval: ColQwen2.5 via colpali-engine (local/Modal); Gemini Embedding 2 as single-vector baseline for the writeup only.
+   - Reranker: BAAI/bge-reranker-v2-m3 local CPU.
+   - ASR: WhisperX large-v3 local MPS.
+   - Premium triangulation: claude-sonnet-4-6 + gpt-5.5, one-off on test_gold for the methodology writeup.
+
+   **Selection rule:** within each component, pick the cheapest candidate whose eval score is within 3pp of the leader AND meets all minimums (defined in ADR 004). Do not lock a default before running the phase-2 bakeoff. Do not introduce a new model without an ADR amendment.
 
 7. **`verified: true` is sacred.** Never flip `verified: true` on an example without watching the actual clip. The validator gates committed corpora on this field.
 
