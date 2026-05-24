@@ -34,14 +34,13 @@ Given a natural-language question and a corpus of indexed talks, return:
 
 ## Success criteria
 
-The project is successful when all four hold simultaneously:
+The project is successful when all three hold simultaneously:
 
-1. **Eval green:** `make validate-evals` passes; held-out test set scores meet targets defined in `docs/eval-methodology.md`.
-2. **Public methodology:** the chunking ablation report is published as an MDX page on the deploy with reproducible commands.
-3. **Demo is legible:** a recruiter watching for 60 seconds understands what was built and why it is hard.
-4. **Two interview wins:** the project leads to two on-site interviews where it is referenced positively by the interviewer.
+1. **Eval green on locked test set:** `make validate-evals` passes; final `test_gold.jsonl` numbers meet the targets defined in `docs/eval-methodology.md` (ClaimsSupported ≥ 0.85, TimestampRecall@3 ≥ 0.80, corpus-negative RefusalRate ≥ 0.90, judge-human kappa ≥ 0.6).
+2. **Public methodology:** the chunking ablation report is published as an MDX page on the deploy with reproducible commands, fixture diff, and the test_gold SHA recorded.
+3. **Demo is legible:** a stranger watching for 60 seconds understands what was built and why it is hard, without the README.
 
-The last criterion is the actual product success metric. The technical metrics are inputs to it.
+Career outcomes (interview signal, offers, recruiter inbound) are downstream of these and tracked separately, not in this PRD.
 
 ## Constraints
 

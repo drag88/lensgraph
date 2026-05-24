@@ -18,7 +18,7 @@ The story on the resume is:
 - `docs/architecture.md` — system design
 - `docs/eval-methodology.md` — why the eval is the project
 - `docs/roadmap.md` — 12-week build plan
-- `docs/decisions/` — architecture decision records
+- `docs/decisions/` — architecture decision records (LangGraph, Postgres-only, corpus, model selection)
 - `eval/schemas/` — three executable JSON Schemas (talk, gold example, boundary audit)
 - `eval/corpora/ai_engineering_v0/` — corpus directory, currently empty but schema-valid
 - `eval/curation/playbook.md` — how to build the gold set in 5 working days

@@ -47,6 +47,8 @@ Postgres + pgvector as the single source of truth, LangGraph as the agent loop, 
 
 **Cross-family LLM judge.** If Claude drafts curation candidates, GPT-4-class is the judge, and vice versa. Mitigates same-model bias in faithfulness scoring.
 
+**Specific models and local-vs-API per component:** see `docs/decisions/004-model-selection.md`. In short: ASR + ColPali + reranker run locally (Mac MPS / CPU); Claude Sonnet 4.6 plans and generates; Claude Haiku 4.5 does cheap extraction; OpenAI flagship is the cross-family judge; Voyage-3-large embeds; Modal handles burst GPU for ColPali ingest.
+
 **Conference talks as launch corpus.** See `docs/decisions/003-conference-talks-corpus.md`.
 
 ## Data flow — a query

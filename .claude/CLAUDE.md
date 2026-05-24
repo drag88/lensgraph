@@ -18,6 +18,8 @@ Multimodal video RAG over engineering conference talks. Eval-first; the eval har
 
 6. **One agent framework.** LangGraph only. No LangChain core, no LlamaIndex. See `docs/decisions/001-langgraph-not-llamaindex.md`.
 
+6a. **Model selection follows ADR 004.** Claude Sonnet 4.6 for generation/planning, Claude Haiku 4.5 for cheap extraction, OpenAI flagship as cross-family judge, Voyage-3-large for text embeddings, ColQwen2 (local/Modal) for visual document retrieval, WhisperX local for ASR, BGE-reranker-v2-m3 local for reranking. Do not introduce a new model without an ADR amendment.
+
 7. **`verified: true` is sacred.** Never flip `verified: true` on an example without watching the actual clip. The validator gates committed corpora on this field.
 
 8. **Run `make validate-evals-strict` before any commit that touches `eval/`.** The default `validate-evals` is the CI gate and is lenient on missing transcript files (transcripts are gitignored). The `-strict` target fails on missing transcripts and is the local commit gate. CI cannot enforce this — discipline is on you.
