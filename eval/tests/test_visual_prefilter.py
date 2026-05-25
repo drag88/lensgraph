@@ -111,9 +111,7 @@ def test_visual_retrieve_returns_top_k_frames(test_db, populated_frames):
     assert [r.rank for r in results] == [1, 2, 3]
 
 
-def test_visual_retrieve_orders_by_cosine_similarity_non_increasing(
-    test_db, populated_frames
-):
+def test_visual_retrieve_orders_by_cosine_similarity_non_increasing(test_db, populated_frames):
     with psycopg.connect(test_db, autocommit=True) as conn:
         results = visual.retrieve_frames(conn, "database design", top_k=4)
     scores = [r.score for r in results]

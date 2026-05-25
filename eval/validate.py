@@ -230,9 +230,7 @@ def validate_corpora(strict: bool = False) -> int:
                 tpath = PROJECT_ROOT / tpath_rel if tpath_rel else None
                 expected_sha = talk.get("transcript_sha256")
                 if not tpath or not tpath.exists():
-                    msg = (
-                        f"{source}: transcript_path '{tpath_rel}' missing on disk"
-                    )
+                    msg = f"{source}: transcript_path '{tpath_rel}' missing on disk"
                     (errors if strict else warnings).append(msg)
                 else:
                     actual = sha256_file(tpath)
@@ -330,9 +328,7 @@ def run_self_test() -> int:
             continue
         errs = validate_example(ex, gold_v, f.name)
         if errs:
-            failures.append(
-                f"{f.name}: expected VALID, got {len(errs)} error(s); first: {errs[0]}"
-            )
+            failures.append(f"{f.name}: expected VALID, got {len(errs)} error(s); first: {errs[0]}")
 
     for f in invalid_files:
         try:

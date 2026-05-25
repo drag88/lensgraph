@@ -161,8 +161,8 @@ def test_channel_ranks_preserved_exactly():
     """Each FusedResult.channel_ranks reflects the exact ranks the input
     channels gave that chunk."""
     channels = {
-        "bm25":   [_cr(1, 1), _cr(2, 2), _cr(3, 3)],
-        "dense":  [_cr(2, 1), _cr(1, 2)],
+        "bm25": [_cr(1, 1), _cr(2, 2), _cr(3, 3)],
+        "dense": [_cr(2, 1), _cr(1, 2)],
         "sparse": [_cr(3, 1)],
     }
     fused = fuse(channels, k=60, top_k=10)
@@ -177,8 +177,8 @@ def test_missing_channels_absent_from_channel_ranks_not_zero_or_null():
     channel_ranks — not represented as 0, None, or sentinel.
     Consumers iterate dict.keys() to identify contributing channels."""
     channels = {
-        "bm25":   [_cr(1, 1)],
-        "dense":  [],                        # empty
+        "bm25": [_cr(1, 1)],
+        "dense": [],  # empty
         "sparse": [_cr(2, 1)],
     }
     fused = fuse(channels, k=60, top_k=10)

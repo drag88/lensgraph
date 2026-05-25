@@ -59,10 +59,7 @@ def _load_talk_entry(corpus_dir: Path, video_id: str) -> dict:
     for entry in talks:
         if entry["video_id"] == video_id:
             return entry
-    raise KeyError(
-        f"video_id {video_id!r} not found in {talks_yaml} "
-        f"(corpus={corpus_dir.name})"
-    )
+    raise KeyError(f"video_id {video_id!r} not found in {talks_yaml} (corpus={corpus_dir.name})")
 
 
 def _build_talk(entry: dict) -> Talk:

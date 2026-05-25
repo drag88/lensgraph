@@ -47,6 +47,6 @@ class FusedResult:
     start_sec: float
     end_sec: float
     text: str
-    score: float                    # fused RRF score
-    rank: int                       # 1-indexed position in fused list
-    channel_ranks: dict[str, int]   # channel_name -> rank in that channel
+    score: float  # fused RRF score
+    rank: int  # 1-indexed position in fused list
+    channel_ranks: dict[str, int]  # channel_name -> rank in that channel

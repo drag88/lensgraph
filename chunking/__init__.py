@@ -15,7 +15,5 @@ _REGISTRY: dict[str, Callable] = {
 def get_chunker(name: str) -> Callable:
     """Return the chunker callable for `name`. Raises KeyError if unknown."""
     if name not in _REGISTRY:
-        raise KeyError(
-            f"unknown chunking strategy: {name}; available: {sorted(_REGISTRY)}"
-        )
+        raise KeyError(f"unknown chunking strategy: {name}; available: {sorted(_REGISTRY)}")
     return _REGISTRY[name]

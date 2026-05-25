@@ -53,16 +53,12 @@ def fuse(
     by_chunk: dict[int, dict] = {}
     for channel_name, results in channels.items():
         for r in results:
-            entry = by_chunk.setdefault(
-                r.chunk_id, {"meta": r, "ranks_by_channel": {}}
-            )
+            entry = by_chunk.setdefault(r.chunk_id, {"meta": r, "ranks_by_channel": {}})
             entry["ranks_by_channel"][channel_name] = r.rank
 
     scored: list[tuple[float, int, ChannelResult, dict[str, int]]] = []
     for chunk_id, entry in by_chunk.items():
-        rrf_score = sum(
-            1.0 / (k + rank) for rank in entry["ranks_by_channel"].values()
-        )
+        rrf_score = sum(1.0 / (k + rank) for rank in entry["ranks_by_channel"].values())
         scored.append((rrf_score, chunk_id, entry["meta"], entry["ranks_by_channel"]))
 
     scored.sort(key=lambda x: (-x[0], x[1]))

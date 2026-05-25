@@ -117,9 +117,7 @@ def _make_vtt(tmp_path: Path, name: str = "v.vtt") -> Path:
 # -- chunk_handler --------------------------------------------------------
 
 
-def test_chunk_handler_end_to_end_writes_chunks_and_enqueues_embed_jobs(
-    conn, tmp_path
-):
+def test_chunk_handler_end_to_end_writes_chunks_and_enqueues_embed_jobs(conn, tmp_path):
     """Seed talk + chunk-pending status + chunk message. Run process_one
     with chunk_handler. Confirm chunks landed, embed_text status rows
     written, ingest_embed_text queue populated with matching entity_ids."""
@@ -127,9 +125,7 @@ def test_chunk_handler_end_to_end_writes_chunks_and_enqueues_embed_jobs(
     talk = _make_talk("vid-1", vtt)
     upsert_talk(conn, talk)
     iss.upsert(conn, "vid-1", step="chunk", status="pending")
-    pgmq_client.send(
-        conn, "ingest_chunk", {"video_id": "vid-1", "step": "chunk", "entity_id": 0}
-    )
+    pgmq_client.send(conn, "ingest_chunk", {"video_id": "vid-1", "step": "chunk", "entity_id": 0})
 
     with conn.transaction():
         processed = workers.process_one(conn, "ingest_chunk", handlers.chunk_handler)
@@ -159,9 +155,7 @@ def test_chunk_handler_end_to_end_writes_chunks_and_enqueues_embed_jobs(
     assert all(m.message["video_id"] == "vid-1" for m in msgs)
 
 
-def test_embed_text_handler_end_to_end_writes_all_three_embed_tables(
-    conn, tmp_path
-):
+def test_embed_text_handler_end_to_end_writes_all_three_embed_tables(conn, tmp_path):
     """Seed a talk + one chunk row + embed_text status. Run embed_text_handler
     via process_one. This is the test that loads BGE-M3 (~80s cold, ~10s
     warm) so it's the slowest in the suite."""
@@ -181,9 +175,7 @@ def test_embed_text_handler_end_to_end_writes_all_three_embed_tables(
             )
         ],
     )
-    iss.upsert(
-        conn, "vid-embed", step="embed_text", entity_id=chunk_id, status="pending"
-    )
+    iss.upsert(conn, "vid-embed", step="embed_text", entity_id=chunk_id, status="pending")
     pgmq_client.send(
         conn,
         "ingest_embed_text",
@@ -191,9 +183,7 @@ def test_embed_text_handler_end_to_end_writes_all_three_embed_tables(
     )
 
     with conn.transaction():
-        processed = workers.process_one(
-            conn, "ingest_embed_text", handlers.embed_text_handler
-        )
+        processed = workers.process_one(conn, "ingest_embed_text", handlers.embed_text_handler)
     assert processed is True
 
     dense_n = conn.execute(
@@ -212,8 +202,7 @@ def test_embed_text_handler_end_to_end_writes_all_three_embed_tables(
     positions = [
         r[0]
         for r in conn.execute(
-            "SELECT position FROM chunk_token_embeds "
-            "WHERE chunk_id = %s ORDER BY position",
+            "SELECT position FROM chunk_token_embeds WHERE chunk_id = %s ORDER BY position",
             (chunk_id,),
         ).fetchall()
     ]
@@ -242,9 +231,7 @@ def test_chunk_handler_retry_does_not_duplicate_chunks(conn, tmp_path):
     # Direct re-invocation (skip process_one's claim path so we exercise the
     # repo's natural-key conflict instead of the worker's idempotency).
     with conn.transaction():
-        handlers.chunk_handler(
-            conn, {"video_id": "retry-vid", "step": "chunk", "entity_id": 0}
-        )
+        handlers.chunk_handler(conn, {"video_id": "retry-vid", "step": "chunk", "entity_id": 0})
 
     second_count = conn.execute(
         "SELECT count(*) FROM chunks WHERE video_id = 'retry-vid'"
@@ -272,9 +259,7 @@ def test_handler_crash_rolls_back_chunks_and_status(conn, tmp_path, monkeypatch)
         with conn.transaction():
             workers.process_one(conn, "ingest_chunk", handlers.chunk_handler)
 
-    chunk_n = conn.execute(
-        "SELECT count(*) FROM chunks WHERE video_id = 'crash-vid'"
-    ).fetchone()[0]
+    chunk_n = conn.execute("SELECT count(*) FROM chunks WHERE video_id = 'crash-vid'").fetchone()[0]
     assert chunk_n == 0
 
     status_row = conn.execute(
@@ -442,15 +427,12 @@ def test_frames_handler_end_to_end_writes_frames_status_and_enqueues_embed_jobs(
 
     # pooled_embedding stays NULL — slice 2 owns that column.
     nulls = conn.execute(
-        "SELECT count(*) FROM frames "
-        "WHERE video_id = 'fr-vid' AND pooled_embedding IS NULL"
+        "SELECT count(*) FROM frames WHERE video_id = 'fr-vid' AND pooled_embedding IS NULL"
     ).fetchone()[0]
     assert nulls == 6
 
 
-def test_frames_handler_retry_does_not_duplicate_frames(
-    conn, tmp_path, monkeypatch, synth_video
-):
+def test_frames_handler_retry_does_not_duplicate_frames(conn, tmp_path, monkeypatch, synth_video):
     """Re-running frames_handler for the same payload returns the same frame_ids
     without inserting duplicates. Queue is NOT idempotent — the embed_frames
     handler's claim_for_update no-ops on its own redelivery (verified in
@@ -480,8 +462,7 @@ def test_frames_handler_retry_does_not_duplicate_frames(
     first_ids = [
         r[0]
         for r in conn.execute(
-            "SELECT frame_id FROM frames WHERE video_id = 'retry-fr' "
-            "ORDER BY frame_sec"
+            "SELECT frame_id FROM frames WHERE video_id = 'retry-fr' ORDER BY frame_sec"
         ).fetchall()
     ]
     assert len(first_ids) >= 1
@@ -495,8 +476,7 @@ def test_frames_handler_retry_does_not_duplicate_frames(
     second_ids = [
         r[0]
         for r in conn.execute(
-            "SELECT frame_id FROM frames WHERE video_id = 'retry-fr' "
-            "ORDER BY frame_sec"
+            "SELECT frame_id FROM frames WHERE video_id = 'retry-fr' ORDER BY frame_sec"
         ).fetchall()
     ]
     assert second_ids == first_ids
@@ -538,9 +518,7 @@ def test_frames_handler_crash_rolls_back_frames_status_and_message(
         with conn.transaction():
             workers.process_one(conn, "ingest_frames", handlers.frames_handler)
 
-    n = conn.execute(
-        "SELECT count(*) FROM frames WHERE video_id = 'crash-fr'"
-    ).fetchone()[0]
+    n = conn.execute("SELECT count(*) FROM frames WHERE video_id = 'crash-fr'").fetchone()[0]
     assert n == 0
 
     status_row = conn.execute(

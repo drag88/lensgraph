@@ -145,9 +145,7 @@ def chunk(
     See module docstring for algorithm details.
     """
     if overlap_sec >= window_sec:
-        raise ValueError(
-            f"overlap_sec ({overlap_sec}) must be < window_sec ({window_sec})"
-        )
+        raise ValueError(f"overlap_sec ({overlap_sec}) must be < window_sec ({window_sec})")
 
     cues = _parse_vtt(transcript_vtt)
     if not cues:
@@ -161,9 +159,7 @@ def chunk(
 
     while window_start < transcript_end:
         window_end = window_start + window_sec
-        in_window = [
-            (s, e, t) for (s, e, t) in cues if window_start <= (s + e) / 2.0 < window_end
-        ]
+        in_window = [(s, e, t) for (s, e, t) in cues if window_start <= (s + e) / 2.0 < window_end]
         if not in_window:
             window_start += stride
             continue

@@ -171,9 +171,7 @@ def test_chunk_handler_raises_on_missing_talks_row(monkeypatch):
 # -- frames_handler ------------------------------------------------------
 
 
-def _stub_talk_for_frames(
-    *, source_video_id: str | None = None, duration_sec: int = 120
-) -> Talk:
+def _stub_talk_for_frames(*, source_video_id: str | None = None, duration_sec: int = 120) -> Talk:
     return Talk(
         video_id="vid-fr",
         title="frames stub",
@@ -269,16 +267,13 @@ def test_frames_handler_samples_persists_and_fans_out_embed_frames(
     assert sample_args["video_id"] == "vid-fr"
 
     assert [c[2] for c in iss_calls] == [501, 502, 503]
-    assert iss_calls == [
-        ("vid-fr", "embed_frames", fid, "pending") for fid in (501, 502, 503)
-    ]
+    assert iss_calls == [("vid-fr", "embed_frames", fid, "pending") for fid in (501, 502, 503)]
 
     assert len(send_calls) == 1
     queue, payloads = send_calls[0]
     assert queue == "ingest_embed_frames"
     assert payloads == [
-        {"video_id": "vid-fr", "step": "embed_frames", "entity_id": fid}
-        for fid in (501, 502, 503)
+        {"video_id": "vid-fr", "step": "embed_frames", "entity_id": fid} for fid in (501, 502, 503)
     ]
 
 

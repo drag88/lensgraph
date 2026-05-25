@@ -59,17 +59,12 @@ def chunk_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> None:
     chunk_ids = chunks_repo.upsert(conn, chunks)
 
     for chunk_id in chunk_ids:
-        iss.upsert(
-            conn, video_id, step="embed_text", entity_id=chunk_id, status="pending"
-        )
+        iss.upsert(conn, video_id, step="embed_text", entity_id=chunk_id, status="pending")
 
     pgmq_client.send_batch(
         conn,
         "ingest_embed_text",
-        [
-            {"video_id": video_id, "step": "embed_text", "entity_id": cid}
-            for cid in chunk_ids
-        ],
+        [{"video_id": video_id, "step": "embed_text", "entity_id": cid} for cid in chunk_ids],
     )
 
 
@@ -84,9 +79,7 @@ def embed_text_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> Non
 
     text = chunks_repo.get_text(conn, chunk_id=chunk_id, video_id=video_id)
     if text is None:
-        raise ValueError(
-            f"no chunk row for chunk_id={chunk_id}, video_id={video_id!r}"
-        )
+        raise ValueError(f"no chunk row for chunk_id={chunk_id}, video_id={video_id!r}")
 
     out = bge_m3.encode([text])
     embeds_repo.upsert_dense(conn, chunk_id, out.dense[0])
@@ -124,9 +117,7 @@ def frames_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> None:
 
     if talk.source_video_id is not None:
         start = float(talk.source_start_sec or 0.0)
-        duration = float(
-            (talk.source_end_sec or 0.0) - (talk.source_start_sec or 0.0)
-        )
+        duration = float((talk.source_end_sec or 0.0) - (talk.source_start_sec or 0.0))
     else:
         start = 0.0
         duration = float(talk.duration_sec)
@@ -144,15 +135,10 @@ def frames_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> None:
     frame_ids = frames_repo.upsert(conn, samples)
 
     for fid in frame_ids:
-        iss.upsert(
-            conn, video_id, step="embed_frames", entity_id=fid, status="pending"
-        )
+        iss.upsert(conn, video_id, step="embed_frames", entity_id=fid, status="pending")
 
     pgmq_client.send_batch(
         conn,
         "ingest_embed_frames",
-        [
-            {"video_id": video_id, "step": "embed_frames", "entity_id": fid}
-            for fid in frame_ids
-        ],
+        [{"video_id": video_id, "step": "embed_frames", "entity_id": fid} for fid in frame_ids],
     )

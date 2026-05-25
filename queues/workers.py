@@ -93,7 +93,6 @@ def process_one(
         )
     if not pgmq_client.archive(conn, queue, msg.msg_id):
         raise WorkerArchiveFailedError(
-            f"archive returned False after handler for msg_id={msg.msg_id} "
-            f"on queue {queue!r}"
+            f"archive returned False after handler for msg_id={msg.msg_id} on queue {queue!r}"
         )
     return True

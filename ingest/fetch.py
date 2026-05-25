@@ -34,7 +34,9 @@ class FetchResult:
 
     transcript_path: Path
     transcript_sha256: str  # 64-char lowercase hex
-    captions_source: str  # one of: youtube_auto | youtube_manual | manual_transcript | whisperx_large_v3
+    captions_source: (
+        str  # one of: youtube_auto | youtube_manual | manual_transcript | whisperx_large_v3
+    )
 
 
 class Fetcher(Protocol):
@@ -108,10 +110,7 @@ def paths_from_talks_yaml(
     talks_yaml = corpus_dir / "talks.yaml"
     with talks_yaml.open(encoding="utf-8") as f:
         talks = yaml.safe_load(f)
-    return {
-        talk["video_id"]: (repo_root / talk["transcript_path"]).resolve()
-        for talk in talks
-    }
+    return {talk["video_id"]: (repo_root / talk["transcript_path"]).resolve() for talk in talks}
 
 
 @dataclass(frozen=True)

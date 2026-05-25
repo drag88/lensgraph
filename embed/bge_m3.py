@@ -34,9 +34,9 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "eval" / "config" / "mod
 class BgeM3Output:
     """Three-channel encoding result for one or more sentences."""
 
-    dense: np.ndarray              # (N, DENSE_DIM)
+    dense: np.ndarray  # (N, DENSE_DIM)
     sparse: list[dict[int, float]]  # lexical_weights per sentence
-    multi: list[np.ndarray]         # per-token vectors per sentence (T_i, DENSE_DIM)
+    multi: list[np.ndarray]  # per-token vectors per sentence (T_i, DENSE_DIM)
 
 
 def _resolve_model_id() -> str:
@@ -59,8 +59,7 @@ def _resolve_model_id() -> str:
         missing = _REQUIRED_CHANNELS - channels
         if missing:
             raise ValueError(
-                f"{_CANDIDATE_ID} channels missing: {sorted(missing)}; "
-                f"got {sorted(channels)}"
+                f"{_CANDIDATE_ID} channels missing: {sorted(missing)}; got {sorted(channels)}"
             )
         return opt["provider_model_id"]
     raise KeyError(f"candidate {_CANDIDATE_ID!r} not found in text_embeddings options")

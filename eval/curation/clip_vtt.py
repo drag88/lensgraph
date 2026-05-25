@@ -60,8 +60,7 @@ def clip_block(block: str, start_sec: float, end_sec: float) -> str | None:
     clipped_start = max(cue_start, start_sec) - start_sec
     clipped_end = min(cue_end, end_sec) - start_sec
     new_timing = (
-        f"{format_time(clipped_start)} --> {format_time(clipped_end)}"
-        f"{match.group('settings')}"
+        f"{format_time(clipped_start)} --> {format_time(clipped_end)}{match.group('settings')}"
     )
     rebased = TIMESTAMP_RE.sub(new_timing, block, count=1)
     return strip_inline_tags(rebased)

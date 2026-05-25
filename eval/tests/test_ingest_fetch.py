@@ -146,9 +146,7 @@ def test_local_fetcher_writes_talks_row_and_enqueues_chunk(conn, transcript_dir)
     assert fetched is not None
     assert fetched.transcript_path == str(transcript_dir / "good-vid.vtt")
     assert fetched.captions_source == "youtube_auto"
-    assert fetched.transcript_sha256 == _sha256_text(
-        (transcript_dir / "good-vid.vtt").read_text()
-    )
+    assert fetched.transcript_sha256 == _sha256_text((transcript_dir / "good-vid.vtt").read_text())
     assert fetched.ingested_at is not None
 
     # Status rows match the design's step shape.
@@ -185,8 +183,7 @@ def test_skip_asr_when_caption_quality_passes(conn, transcript_dir):
     assert result.asr_skipped is True
     assert (
         conn.execute(
-            "SELECT status FROM ingest_step_status "
-            "WHERE video_id='good-vid' AND step='asr'"
+            "SELECT status FROM ingest_step_status WHERE video_id='good-vid' AND step='asr'"
         ).fetchone()[0]
         == "skipped"
     )
@@ -201,8 +198,7 @@ def test_enqueue_asr_when_caption_quality_fails(conn, transcript_dir):
     assert result.asr_skipped is False
     assert (
         conn.execute(
-            "SELECT status FROM ingest_step_status "
-            "WHERE video_id='bad-vid' AND step='asr'"
+            "SELECT status FROM ingest_step_status WHERE video_id='bad-vid' AND step='asr'"
         ).fetchone()[0]
         == "pending"
     )
@@ -237,9 +233,7 @@ def test_skip_frames_when_format_tags_text_only(conn, transcript_dir):
 
 
 def test_enqueue_frames_when_format_tags_have_visual_content(conn, transcript_dir):
-    talk = _make_talk(
-        "good-vid", format_tags=["slides_heavy", "narrative"], duration_sec=30
-    )
+    talk = _make_talk("good-vid", format_tags=["slides_heavy", "narrative"], duration_sec=30)
     fetcher = LocalFsFetcher(root=transcript_dir)
     with conn.transaction():
         result = pipeline.fetch_reconcile(conn, talk, fetcher)
@@ -290,9 +284,7 @@ def test_re_running_reconcile_overwrites_talks_row(conn, transcript_dir):
     with conn.transaction():
         pipeline.fetch_reconcile(conn, talk, fetcher)
 
-    revised = _make_talk(
-        "good-vid", format_tags=["narrative"], duration_sec=30, title="Revised"
-    )
+    revised = _make_talk("good-vid", format_tags=["narrative"], duration_sec=30, title="Revised")
     with conn.transaction():
         pipeline.fetch_reconcile(conn, revised, fetcher)
 
@@ -373,9 +365,7 @@ def test_local_fetcher_resolves_explicit_paths_dict(tmp_path):
         "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nhello world\n",
         encoding="utf-8",
     )
-    fetcher = LocalFsFetcher(
-        paths={"v-1": vtt_path}, captions_source="youtube_auto"
-    )
+    fetcher = LocalFsFetcher(paths={"v-1": vtt_path}, captions_source="youtube_auto")
     result = fetcher.fetch("v-1")
     assert result.transcript_path == vtt_path
     assert result.captions_source == "youtube_auto"
@@ -423,9 +413,7 @@ def test_paths_from_talks_yaml_returns_absolute_paths_for_ai_engineering_v0():
     assert "W_CYk2ogcDI" in paths
     target = paths["W_CYk2ogcDI"]
     assert target.is_absolute()
-    assert str(target).endswith(
-        "transcripts/ai_engineering_v0/W_CYk2ogcDI.en.vtt"
-    )
+    assert str(target).endswith("transcripts/ai_engineering_v0/W_CYk2ogcDI.en.vtt")
     assert target.exists()
 
 

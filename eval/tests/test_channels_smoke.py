@@ -48,8 +48,7 @@ def conn():
     if chunks_n == 0:
         c.close()
         pytest.skip(
-            "main lensgraph DB has no chunks; "
-            "run `make ingest-all CORPUS=ai_engineering_v0` first"
+            "main lensgraph DB has no chunks; run `make ingest-all CORPUS=ai_engineering_v0` first"
         )
     yield c
     c.close()
@@ -74,9 +73,7 @@ def dev_gold_question() -> str:
     suite without test edits. If the file is missing or empty, fail
     loudly — the corpus is a project invariant.
     """
-    lines = [
-        ln for ln in DEV_GOLD_PATH.read_text(encoding="utf-8").splitlines() if ln.strip()
-    ]
+    lines = [ln for ln in DEV_GOLD_PATH.read_text(encoding="utf-8").splitlines() if ln.strip()]
     if not lines:
         pytest.fail(f"{DEV_GOLD_PATH} has no examples")
     q = json.loads(lines[0])["question"]
@@ -118,9 +115,7 @@ def test_channel_scores_non_increasing_by_rank(conn, channels, name):
         pytest.skip(f"{name} returned empty")
     scores = [r.score for r in results]
     for prev, cur in zip(scores, scores[1:], strict=False):
-        assert cur <= prev, (
-            f"{name} scores must be non-increasing by rank, got {scores!r}"
-        )
+        assert cur <= prev, f"{name} scores must be non-increasing by rank, got {scores!r}"
 
 
 @pytest.mark.parametrize("name", CHANNELS)

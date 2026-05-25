@@ -18,7 +18,9 @@ from db.migrate import apply
 pytestmark = pytest.mark.slow
 
 TEST_DB_NAME = "lensgraph_test_migrations"
-_MIG_TEST_CHUNKING_STRATEGY = "mig_test_filler"  # arbitrary; the test exercises the CHECK constraint, not the registry
+_MIG_TEST_CHUNKING_STRATEGY = (
+    "mig_test_filler"  # arbitrary; the test exercises the CHECK constraint, not the registry
+)
 
 
 def _swap_db(dsn: str, new_db: str) -> str:
@@ -77,9 +79,7 @@ def test_all_tables_exist(test_db):
         "trace_spans",
     }
     with psycopg.connect(test_db) as c:
-        rows = c.execute(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-        ).fetchall()
+        rows = c.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").fetchall()
     present = {r[0] for r in rows}
     missing = expected - present
     assert not missing, f"missing tables: {missing}"
@@ -148,9 +148,7 @@ def test_chunks_end_sec_check_rejects_inverted_span(test_db):
 
 def test_schema_migrations_records_all_versions(test_db):
     with psycopg.connect(test_db) as c:
-        rows = c.execute(
-            "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall()
+        rows = c.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
     assert [r[0] for r in rows] == [
         "0001_init",
         "0002_chunks_embeds",
