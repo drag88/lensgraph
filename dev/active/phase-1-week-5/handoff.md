@@ -3,7 +3,8 @@
 **Written:** 2026-05-25, end of week-4 retrieval session
 **Read by:** the next session, before any implementation
 **Authoritative design:** `docs/phase-1-design.md` rev 4 (commit `e950583`)
-**Branch head:** `c199a2f` `feat(retrieve): visual prefilter stage 1 — ColQwen pooled + cosine HNSW`
+**Branch head:** `8b7b37c` `docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix`
+**Pre-flight fix on top of session-start head:** `2e28dce fix(embed): config-driven ColQwen2.5 model id + lazy resolver tests` (yaml-pinned to `vidore/colqwen2.5-v0.2`; removes the last hardcoded model string from `embed/colqwen.py`).
 
 ---
 
@@ -20,7 +21,7 @@ Two pieces ship in the most recent slice:
 ### Gates green at HEAD
 
 ```
-make test                36 fast tests pass (was 22 → 33 → 36 with ColQwen lazy resolver)
+make test                41 fast tests pass (33 at c199a2f + 5 ColQwen lazy resolver + 3 reconcile)
 make lint                clean
 make phase0-gate         OK (11/3 verified gold across distinct talks)
 make validate-evals-strict  clean
@@ -45,11 +46,13 @@ test_colqwen_lazy        5  (fast, config-driven resolver + zero-input short-cir
 test_visual_prefilter    4  (slow, DEFERRED — see below)
 ```
 
-### One open verification gate — visual slow test
+### One open verification gate — visual slow test (STILL OPEN)
 
-The visual prefilter test (`eval/tests/test_visual_prefilter.py`) was committed with a deferred end-to-end run because the ColQwen2.5 v0.2 model is ~14 GB and the session ran out of download budget after pulling only 244 MB. The wire is straightforward (same pgvector cosine HNSW pattern as `dense.py`, which IS fully exercised), but the next session must close this gate before relying on visual retrieval downstream.
+**Status: OPEN.** The visual prefilter test (`eval/tests/test_visual_prefilter.py`, 4 slow tests) was committed with a deferred end-to-end run because the ColQwen2.5 v0.2 model is ~14 GB and the prior session ran out of download budget after pulling only 244 MB. The pre-flight `2e28dce` commit removed the hardcoded model id (the wrapper now reads `vidore/colqwen2.5-v0.2` from `eval/config/model_candidates.yaml`) but did NOT exercise the heavy model — that's still gated on Docker + the weights cache.
 
-**Run before any week-5 work:**
+The wire is straightforward (same pgvector cosine HNSW pattern as `dense.py`, which IS fully exercised), but this gate must close before slice 1 begins.
+
+**Run before any week-5 slice-1 work:**
 
 ```bash
 make db-up

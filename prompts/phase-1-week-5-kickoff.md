@@ -4,10 +4,11 @@ You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's tex
 
 <repo_state>
 Working directory: /Users/aswinsreenivas/1_Code/1.1_personal/lensgraph/
-HEAD: f2fd3a2 docs(handoff): phase-1 week-5 session handoff + kickoff prompt
-  (or later — a fix(embed) ColQwen-config commit may land on top before slice 0)
+HEAD: 8b7b37c docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix
 
 Last 10 commits (context, do not re-litigate):
+  8b7b37c docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix
+  2e28dce fix(embed): config-driven ColQwen2.5 model id + lazy resolver tests
   f2fd3a2 docs(handoff): phase-1 week-5 session handoff + kickoff prompt
   c199a2f feat(retrieve): visual prefilter stage 1 — ColQwen pooled + cosine HNSW
   baffa55 fix(retrieve): RRF returns FusedResult with channel_ranks provenance
@@ -20,10 +21,10 @@ Last 10 commits (context, do not re-litigate):
   6b2f921 fix(embed): config-driven model id + sparse normalization + lazy-load test + decouple migration test
   37fd978 feat(embed): BGE-M3 lazy singleton with three-channel encode
 
-Gates green at HEAD (verified end of last session):
+Gates green at HEAD (verified after the pre-flight ColQwen config fix):
   make validate-evals-strict   OK (0 warnings, 11 verified gold)
   make phase0-gate             OK (11/3 across 3 talks)
-  make test                    OK (36 fast tests)
+  make test                    OK (41 fast tests)
   make lint                    OK
 
 DB state (resumes from named volume pgdata after make db-up):
@@ -31,7 +32,7 @@ DB state (resumes from named volume pgdata after make db-up):
   212 chunks + 212 dense + 212 sparse + 73,621 chunk_token_embeds rows
   frames table EMPTY (frame-sampling worker is your slice 1 deliverable)
 
-One open verification gate from the prior session: `eval/tests/test_visual_prefilter.py` (4 slow tests) was committed but the end-to-end run timed out mid-ColQwen download. Run it FIRST this session per <first_actions>.
+One open verification gate from the prior session (STILL OPEN): `eval/tests/test_visual_prefilter.py` (4 slow tests) was committed but the end-to-end run timed out mid-ColQwen download. The pre-flight `2e28dce` commit cleaned up the hardcoded model id but did NOT exercise the heavy weights — that's still gated on Docker + the ~14 GB ColQwen2.5 download. Run it FIRST this session per <first_actions>.
 </repo_state>
 
 <reading_order>
@@ -184,7 +185,7 @@ Run these in order before any code. Verify state matches <repo_state>; if it doe
 
 2. make validate-evals-strict     # 0 warnings, 11 verified examples
 3. make phase0-gate                # OK (11/3)
-4. make test                       # 36 passed (was 33 before ColQwen-config lazy tests)
+4. make test                       # 41 passed (33 at c199a2f + 5 ColQwen lazy + 3 reconcile)
 5. make lint                       # clean
 
 6. Read dev/active/phase-1-week-5/handoff.md (the operational guide).
