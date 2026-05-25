@@ -8,6 +8,7 @@ and reports per-video readiness across the ingest pipeline:
   - chunks count > 0
   - dense_embeds count > 0
   - sparse_embeds count > 0
+  - chunk_token_embeds count > 0 (multi-vector channel)
 
 Read-only — never writes to the DB. Returns 0 unconditionally so callers
 can treat it as a status report, not a gate.
@@ -51,7 +52,7 @@ def _collect_video_ids(corpus_dir: Path) -> list[str]:
     return sorted(video_ids)
 
 
-def _probe(conn: psycopg.Connection, video_id: str) -> tuple[bool, int, int, int]:
+def _probe(conn: psycopg.Connection, video_id: str) -> tuple[bool, int, int, int, int]:
     row = conn.execute("SELECT 1 FROM talks WHERE video_id = %s", (video_id,)).fetchone()
     has_talk = row is not None
     chunks_n = conn.execute(
@@ -69,7 +70,14 @@ def _probe(conn: psycopg.Connection, video_id: str) -> tuple[bool, int, int, int
         "WHERE c.video_id = %s",
         (video_id,),
     ).fetchone()[0]
-    return has_talk, int(chunks_n), int(dense_n), int(sparse_n)
+    # Distinct chunk_ids that have any per-token rows — readiness, not raw row count.
+    tokens_n = conn.execute(
+        "SELECT count(DISTINCT cte.chunk_id) "
+        "FROM chunk_token_embeds cte JOIN chunks c ON c.chunk_id = cte.chunk_id "
+        "WHERE c.video_id = %s",
+        (video_id,),
+    ).fetchone()[0]
+    return has_talk, int(chunks_n), int(dense_n), int(sparse_n), int(tokens_n)
 
 
 def _mark(ok: bool) -> str:
@@ -92,17 +100,21 @@ def main(argv: list[str] | None = None) -> int:
     video_ids = _collect_video_ids(corpus_dir)
 
     print(f"bakeoff-prep: corpus={ns.corpus} videos={len(video_ids)}")
-    print(f"{'video_id':<32} {'talks':>5}  {'chunks':>6}  {'dense':>5}  {'sparse':>6}")
+    print(
+        f"{'video_id':<32} {'talks':>5}  {'chunks':>6}  {'dense':>5}  "
+        f"{'sparse':>6}  {'tokens':>6}"
+    )
 
     with psycopg.connect(resolve_dsn()) as conn:
         for vid in video_ids:
-            has_talk, chunks_n, dense_n, sparse_n = _probe(conn, vid)
+            has_talk, chunks_n, dense_n, sparse_n, tokens_n = _probe(conn, vid)
             print(
                 f"{vid:<32} "
                 f"{_mark(has_talk):>5}  "
                 f"{_mark(chunks_n > 0):>6}  "
                 f"{_mark(dense_n > 0):>5}  "
-                f"{_mark(sparse_n > 0):>6}"
+                f"{_mark(sparse_n > 0):>6}  "
+                f"{_mark(tokens_n > 0):>6}"
             )
     return 0
 
