@@ -155,11 +155,11 @@ candidates:
     options:
       - id: colqwen2.5
         provider: local
-        provider_model_id: "vidore/colqwen2.5"
+        provider_model_id: "vidore/colqwen2.5-v0.2"
         price_per_mtok_usd: 0.0
         hardware: mac-mps-or-modal
         family: colpali
-        notes: "Primary. Modal bursts for full-corpus ingest."
+        notes: "Primary. Modal bursts for full-corpus ingest. Pinned to v0.2 — vidore publishes the ColQwen2.5 weights only under versioned suffixes (no unversioned alias); embed/colqwen.py was already probed against v0.2 on colpali-engine 0.3.16."
       - id: gemini-embedding-2-singlevec
         provider: google
         provider_model_id: "gemini-embedding-2"

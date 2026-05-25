@@ -1,9 +1,11 @@
 """ColQwen2.5 image + text encoder for the visual retrieval channel.
 
-Loads vidore/ColQwen2.5 via colpali-engine. Phase-1 step-19/20 exposes
-only the pooled image encoder + a text query encoder — the two functions
-the pooled-prefilter stage of retrieve/visual.py needs. Full per-patch
-embeddings for MaxSim land in step 24.
+Loads the candidate identified by
+``model_candidates.yaml::visual_retrieval[colqwen2.5]`` via colpali-engine.
+Phase-1 step-19/20 exposes only the pooled image encoder + a text query
+encoder — the two functions the pooled-prefilter stage of
+``retrieve/visual.py`` needs. Full per-patch embeddings for MaxSim land
+in step 24.
 
 Hardware: torch picks MPS on Apple Silicon when available, else CPU.
 Modal remote inference is the deferred fallback (`docs/phase-1-design.md`
@@ -23,26 +25,51 @@ colpali-engine API path (probed 2026-05-25 on 0.3.16):
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 POOLED_DIM = 128
 
+_CANDIDATE_ID = "colqwen2.5"
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "eval" / "config" / "model_candidates.yaml"
+
+
+def _resolve_model_id() -> str:
+    """Load model_candidates.yaml, return provider_model_id for the
+    colqwen2.5 candidate. Validates provider=='local' so a yaml drift to
+    Modal/hosted is caught at boot, not silently mid-encode."""
+    import yaml
+
+    raw = yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8"))
+    options = raw["candidates"]["visual_retrieval"]["options"]
+    for opt in options:
+        if opt.get("id") != _CANDIDATE_ID:
+            continue
+        if opt.get("provider") != "local":
+            raise ValueError(
+                f"{_CANDIDATE_ID} provider must be 'local', got {opt.get('provider')!r}"
+            )
+        return opt["provider_model_id"]
+    raise KeyError(f"candidate {_CANDIDATE_ID!r} not found in visual_retrieval options")
+
 
 @lru_cache(maxsize=1)
 def _model() -> Any:
-    """Load ColQwen2.5 + its processor. Heavy import deferred until first call."""
+    """Load ColQwen2.5 + its processor. Heavy import deferred until first
+    call. Model id resolved from model_candidates.yaml — see _resolve_model_id."""
     import torch
     from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
 
+    model_id = _resolve_model_id()
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     model = ColQwen2_5.from_pretrained(
-        "vidore/colqwen2.5-v0.2",
+        model_id,
         torch_dtype=torch.float16 if device == "mps" else torch.float32,
         device_map=device,
     ).eval()
-    processor = ColQwen2_5_Processor.from_pretrained("vidore/colqwen2.5-v0.2")
+    processor = ColQwen2_5_Processor.from_pretrained(model_id)
     return model, processor, device
 
 
