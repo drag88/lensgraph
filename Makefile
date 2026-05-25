@@ -1,5 +1,7 @@
 .PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean db-up db-down db-build db-verify-ext db-migrate db-reset logs ingest ingest-all bakeoff-prep
 
+CORPUS ?= ai_engineering_v0
+
 help:
 	@echo "LensGraph make targets:"
 	@echo "  install                  uv sync (set up env)"
@@ -19,7 +21,7 @@ help:
 	@echo "  logs                     tail worker log ($$LENSGRAPH_LOG_PATH or default)"
 	@echo "  ingest                   ingest one video by id (VIDEO_ID=<id>) via local transcripts"
 	@echo "  ingest-all               ingest a whole corpus (CORPUS=<name>) via local transcripts"
-	@echo "  bakeoff-prep             report chunks/embeds readiness per dev_gold video"
+	@echo "  bakeoff-prep             report chunks/embeds readiness for corpus (CORPUS=<name>)"
 
 install:
 	uv sync
@@ -84,4 +86,4 @@ ingest-all:
 	uv run python -m ingest.cli_all --corpus $(CORPUS)
 
 bakeoff-prep:
-	uv run python -m scripts.bakeoff_prep
+	uv run python -m scripts.bakeoff_prep --corpus $(CORPUS)

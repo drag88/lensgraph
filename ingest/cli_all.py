@@ -30,6 +30,7 @@ import yaml
 
 from db.conn import dsn as resolve_dsn
 from db.repos.talks import Talk
+from ingest import readiness
 from ingest.fetch import LocalFsFetcher, paths_from_talks_yaml
 from ingest.handlers import chunk_handler, embed_text_handler
 from ingest.pipeline import fetch_reconcile
@@ -133,11 +134,31 @@ def main(argv: list[str] | None = None) -> int:
         embed_drained = _drain(conn, "ingest_embed_text", embed_text_handler)
         print(f"drained {embed_drained} from ingest_embed_text")
 
-        print(f"summary: corpus={args.corpus} videos={len(talks)} "
-              f"chunk_msgs={chunk_drained} embed_msgs={embed_drained}")
+        print(
+            f"summary: corpus={args.corpus} videos={len(talks)} "
+            f"chunk_msgs={chunk_drained} embed_msgs={embed_drained}"
+        )
         for vid, status in per_video_fetch.items():
             print(f"  {vid}: {status}")
 
+        fetch_failed = any(status != "ok" for status in per_video_fetch.values())
+
+        reports = readiness.for_corpus(conn, corpus_dir)
+        incomplete = [r for r in reports if not r.complete]
+        for r in incomplete:
+            print(
+                f"INCOMPLETE: {r.video_id} "
+                f"talks={'y' if r.talks_present else 'n'} "
+                f"chunks={r.chunks_n} "
+                f"dense={r.dense_n}/{r.chunks_n} "
+                f"sparse={r.sparse_n}/{r.chunks_n} "
+                f"tokens={r.tokens_n}/{r.chunks_n}"
+            )
+
+    if fetch_failed:
+        return 1
+    if incomplete:
+        return 1
     return 0
 
 
