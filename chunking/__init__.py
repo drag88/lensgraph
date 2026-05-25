@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from chunking.fixed_window import STRATEGY_NAME as FIXED_WINDOW
 from chunking.fixed_window import chunk as fixed_window_chunk
 
 _REGISTRY: dict[str, Callable] = {
-    "fixed_window": fixed_window_chunk,
+    FIXED_WINDOW: fixed_window_chunk,
 }
 
 

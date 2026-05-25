@@ -17,7 +17,7 @@ import re
 
 from chunking.types import Chunk, Frame
 
-_STRATEGY_NAME = "fixed_window"
+STRATEGY_NAME = "fixed_window"
 
 _INLINE_TAG_RE = re.compile(r"<[^>]*>")
 _CUE_INDEX_RE = re.compile(r"^\d+$")
@@ -182,7 +182,7 @@ def chunk(
                 start_sec=actual_start,
                 end_sec=actual_end,
                 text=text,
-                chunking_strategy=_STRATEGY_NAME,
+                chunking_strategy=STRATEGY_NAME,
                 frame_secs=frame_secs,
                 token_count=token_count,
             )

@@ -7,7 +7,7 @@ import textwrap
 import pytest
 
 from chunking import get_chunker
-from chunking.fixed_window import chunk
+from chunking.fixed_window import STRATEGY_NAME, chunk
 from chunking.types import Chunk, Frame
 
 
@@ -139,10 +139,11 @@ def test_overlap_must_be_less_than_window():
 
 
 def test_get_chunker_returns_callable():
-    fn = get_chunker("fixed_window")
+    fn = get_chunker(STRATEGY_NAME)
     assert callable(fn)
     result = fn(_vtt_60s(), [], video_id="vid1")
     assert all(isinstance(c, Chunk) for c in result)
+    assert all(c.chunking_strategy == STRATEGY_NAME for c in result)
     with pytest.raises(KeyError):
         get_chunker("does_not_exist")
 
