@@ -11,6 +11,7 @@ itself functional — `pgmq.create()` is a procedure, not DDL. See design §2
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,10 +53,36 @@ def ensure_queues(
 
 def send(conn: psycopg.Connection, queue: str, payload: dict[str, Any]) -> int:
     """Enqueue a jsonb payload. Returns the assigned msg_id."""
-    row = conn.execute(
-        "SELECT pgmq.send(%s, %s)", (queue, Jsonb(payload))
-    ).fetchone()
+    row = conn.execute("SELECT pgmq.send(%s, %s)", (queue, Jsonb(payload))).fetchone()
     return row[0]
+
+
+def send_batch(
+    conn: psycopg.Connection,
+    queue: str,
+    payloads: list[dict[str, Any]],
+) -> list[int]:
+    """Enqueue a batch of payloads in one round-trip. Returns msg_ids in input order.
+
+    Wraps `pgmq.send_batch(text, jsonb[]) RETURNS SETOF bigint` (pgmq 1.5.x
+    returns SETOF, not a single bigint[] — we fetchall and unwrap). Single
+    statement; runs inside the caller's transaction. Empty input
+    short-circuits with no DB call.
+
+    Adapter note: psycopg adapts `list[Jsonb]` as a Postgres text-array
+    literal of JSON strings (not jsonb[]), so passing it directly to a
+    `jsonb[]` parameter raises a type-mismatch. We instead pass a `list[str]`
+    of pre-serialized JSON and cast `::jsonb[]` server-side — the most
+    portable pattern with psycopg3 across pgvector / pgmq versions.
+    """
+    if not payloads:
+        return []
+    encoded = [json.dumps(p) for p in payloads]
+    rows = conn.execute(
+        "SELECT pgmq.send_batch(%s, %s::jsonb[])",
+        (queue, encoded),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
 
 
 def read(

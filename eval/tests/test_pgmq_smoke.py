@@ -82,9 +82,7 @@ def _seed(conn, video_id: str, step: str = "fetch") -> int:
     """Upsert talk + pending status row, enqueue a payload. Return msg_id."""
     upsert(conn, _make_talk(video_id))
     iss.upsert(conn, video_id, step=step)
-    return pgmq_client.send(
-        conn, QUEUE, {"video_id": video_id, "step": step, "entity_id": 0}
-    )
+    return pgmq_client.send(conn, QUEUE, {"video_id": video_id, "step": step, "entity_id": 0})
 
 
 # -- pgmq_client primitives ------------------------------------------------
@@ -112,6 +110,29 @@ def test_archive_removes_from_visible_queue(conn):
     assert again == []
     # Sanity: the msg_id we archived was the one we read.
     assert msg_id == msgs[0].msg_id
+
+
+def test_send_batch_returns_msg_ids_in_order(conn):
+    payloads = [
+        {"video_id": "a", "step": "embed_text", "entity_id": 1},
+        {"video_id": "a", "step": "embed_text", "entity_id": 2},
+        {"video_id": "a", "step": "embed_text", "entity_id": 3},
+    ]
+    msg_ids = pgmq_client.send_batch(conn, QUEUE, payloads)
+    assert len(msg_ids) == 3
+    assert all(isinstance(m, int) and m > 0 for m in msg_ids)
+    # Round-trip: read them back and confirm the payloads match (order on dequeue
+    # is FIFO by msg_id, which is also the order we sent them).
+    msgs = pgmq_client.read(conn, QUEUE, vt=30, qty=3)
+    assert [m.msg_id for m in msgs] == msg_ids
+    assert [m.message for m in msgs] == payloads
+
+
+def test_send_batch_empty_input_no_db_call(conn):
+    # Empty input short-circuits to [] without hitting the database.
+    assert pgmq_client.send_batch(conn, QUEUE, []) == []
+    # And no messages were enqueued.
+    assert pgmq_client.read(conn, QUEUE, vt=1, qty=1) == []
 
 
 # -- worker process_one ---------------------------------------------------
@@ -298,9 +319,7 @@ def test_process_one_raises_when_archive_returns_false(conn, monkeypatch):
     assert len(msgs) == 1
 
 
-def test_process_one_already_completed_branch_raises_on_archive_failure(
-    conn, monkeypatch
-):
+def test_process_one_already_completed_branch_raises_on_archive_failure(conn, monkeypatch):
     """The already-completed / skipped branch also has to honour the archive
     contract — silently swallowing a failed archive there would leave a
     completed row plus a visible message, causing redelivery forever."""

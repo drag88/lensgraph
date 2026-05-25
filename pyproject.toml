@@ -8,6 +8,7 @@ dependencies = [
     "jsonschema[format-nongpl]>=4.20",
     "pyyaml>=6.0",
     "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3.6",
     "pydantic>=2.7",
     "FlagEmbedding>=1.3",
 ]
