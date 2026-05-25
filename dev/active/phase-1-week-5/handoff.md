@@ -3,7 +3,7 @@
 **Written:** 2026-05-25, end of week-4 retrieval session
 **Read by:** the next session, before any implementation
 **Authoritative design:** `docs/phase-1-design.md` rev 4 (commit `e950583`)
-**Branch head:** `8b7b37c` `docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix`
+**Branch head:** `70c5a19` `docs(handoff): correct HEAD pointer + fast-test count after pre-flight fix`
 **Pre-flight fix on top of session-start head:** `2e28dce fix(embed): config-driven ColQwen2.5 model id + lazy resolver tests` (yaml-pinned to `vidore/colqwen2.5-v0.2`; removes the last hardcoded model string from `embed/colqwen.py`).
 
 ---
@@ -43,25 +43,16 @@ test_handlers_fast       3  (fast, picked up by make test)
 test_bge_m3_lazy         1  (fast)
 test_rrf                14  (fast, +3 provenance)
 test_colqwen_lazy        5  (fast, config-driven resolver + zero-input short-circuits)
-test_visual_prefilter    4  (slow, DEFERRED — see below)
+test_visual_prefilter    4  (slow, CLOSED — 4 passed in 38.08s against the live container)
 ```
 
-### One open verification gate — visual slow test (STILL OPEN)
+### Slice 0 / visual stage-1 verification gate — CLOSED
 
-**Status: OPEN.** The visual prefilter test (`eval/tests/test_visual_prefilter.py`, 4 slow tests) was committed with a deferred end-to-end run because the ColQwen2.5 v0.2 model is ~14 GB and the prior session ran out of download budget after pulling only 244 MB. The pre-flight `2e28dce` commit removed the hardcoded model id (the wrapper now reads `vidore/colqwen2.5-v0.2` from `eval/config/model_candidates.yaml`) but did NOT exercise the heavy model — that's still gated on Docker + the weights cache.
+**Status: CLOSED 2026-05-25.** All 4 slow tests in `eval/tests/test_visual_prefilter.py` passed in 38.08s against the live container. The ColQwen2.5 v0.2 weights were already cached locally from the prior session's partial pull, so the cold-start ~14 GB download did not need to repeat.
 
-The wire is straightforward (same pgvector cosine HNSW pattern as `dense.py`, which IS fully exercised), but this gate must close before slice 1 begins.
+The pre-flight `2e28dce fix(embed)` commit pulled the model id from `eval/config/model_candidates.yaml::candidates.visual_retrieval[colqwen2.5]` (provider validated as `local`) — no string is hardcoded in `embed/colqwen.py` anymore.
 
-**Run before any week-5 slice-1 work:**
-
-```bash
-make db-up
-make db-migrate
-uv run pytest eval/tests/test_visual_prefilter.py -q -m slow   # ~10-15 min first time (model dl + cold load)
-make db-down
-```
-
-If any of the 4 visual tests fail, fix before proceeding. The failure mode most likely worth checking: colpali-engine API path. The teammate probed `colpali_engine.models.ColQwen2_5` + `ColQwen2_5_Processor` on 0.3.16 and confirmed those exports exist; if they shift in a future release, `_model()` in `embed/colqwen.py` needs adjustment.
+If a future colpali-engine release shifts the export path away from `colpali_engine.models.ColQwen2_5` + `ColQwen2_5_Processor`, `_model()` in `embed/colqwen.py` needs adjustment. Probed on 0.3.16 and confirmed those exports exist.
 
 ---
 

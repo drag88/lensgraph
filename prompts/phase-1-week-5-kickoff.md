@@ -4,9 +4,10 @@ You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's tex
 
 <repo_state>
 Working directory: /Users/aswinsreenivas/1_Code/1.1_personal/lensgraph/
-HEAD: 8b7b37c docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix
+HEAD: 70c5a19 docs(handoff): correct HEAD pointer + fast-test count after pre-flight fix
 
 Last 10 commits (context, do not re-litigate):
+  70c5a19 docs(handoff): correct HEAD pointer + fast-test count after pre-flight fix
   8b7b37c docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix
   2e28dce fix(embed): config-driven ColQwen2.5 model id + lazy resolver tests
   f2fd3a2 docs(handoff): phase-1 week-5 session handoff + kickoff prompt
@@ -32,7 +33,7 @@ DB state (resumes from named volume pgdata after make db-up):
   212 chunks + 212 dense + 212 sparse + 73,621 chunk_token_embeds rows
   frames table EMPTY (frame-sampling worker is your slice 1 deliverable)
 
-One open verification gate from the prior session (STILL OPEN): `eval/tests/test_visual_prefilter.py` (4 slow tests) was committed but the end-to-end run timed out mid-ColQwen download. The pre-flight `2e28dce` commit cleaned up the hardcoded model id but did NOT exercise the heavy weights — that's still gated on Docker + the ~14 GB ColQwen2.5 download. Run it FIRST this session per <first_actions>.
+Slice 0 / visual stage-1 gate — CLOSED 2026-05-25. `eval/tests/test_visual_prefilter.py` 4/4 slow tests passed in 38.08s against the live container. The pre-flight `2e28dce` commit pulled the ColQwen2.5 model id from `eval/config/model_candidates.yaml` so no string is hardcoded anymore. Slice 1 (frames worker) is the next thing to ship.
 </repo_state>
 
 <reading_order>
@@ -78,16 +79,9 @@ Non-negotiable. From CLAUDE.md, the ADRs, and the design's binding constraints.
 <mission_stack>
 Three slices, take them in order. Each verifies before the next begins. Stop after each slice and report. Do not preempt the next slice without explicit user signal.
 
-== Slice 0 — close the visual stage-1 verification gate ==
+== Slice 0 — CLOSED 2026-05-25 ==
 
-Before any week-5 work, exercise the deferred slow test from last session:
-
-  make db-up
-  make db-migrate
-  uv run pytest eval/tests/test_visual_prefilter.py -q -m slow   # ~10-15 min first time (model dl + cold load)
-  make db-down
-
-If the 4 tests pass, proceed to Slice 1. If any fails, triage `embed/colqwen.py` (most likely colpali-engine API drift since 0.3.16 — adjust import path; or POOLED_DIM mismatch, in which case the runtime assertion raises with the actual dim). Fix in a focused commit `fix(embed): ...` and re-run. Do NOT proceed until visual stage 1 is green.
+`eval/tests/test_visual_prefilter.py` 4/4 slow tests passed in 38.08s against the live container. ColQwen2.5 v0.2 model resolved from `eval/config/model_candidates.yaml`. Ready to begin slice 1.
 
 == Slice 1 — Frame sampler worker (design §8 steps 22-23) ==
 
@@ -190,16 +184,11 @@ Run these in order before any code. Verify state matches <repo_state>; if it doe
 
 6. Read dev/active/phase-1-week-5/handoff.md (the operational guide).
 
-7. Close the open visual gate (slice 0):
-     make db-up
-     make db-migrate
-     uv run pytest eval/tests/test_visual_prefilter.py -q -m slow
-   ~10-15 min on first run (ColQwen2.5 v0.2 ~14GB download + cold load).
-   4 passes required before slice 1.
+7. Skim docs/phase-1-design.md §4, §5, §8 weeks 5.
 
-8. Skim docs/phase-1-design.md §4, §5, §8 weeks 5.
+Slice 0 already CLOSED in a previous session — no need to re-run the visual slow suite unless you've changed `embed/colqwen.py` or the frames table schema.
 
-Only when 1-7 are green: begin slice 1 (frames worker).
+Only when 1-6 are green: begin slice 1 (frames worker).
 </first_actions>
 
 <instructions>
