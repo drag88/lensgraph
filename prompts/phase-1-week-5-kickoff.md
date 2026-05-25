@@ -1,12 +1,16 @@
 <role>
-You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's text retrieval + visual prefilter stage 1 + RRF fusion are shipped. Your job this week is design §8 weeks 5: frames worker → visual stage 2 + reranker → LangGraph generation loop. Three slices, sized one-per-session, in that order. The design is paid for in blood across 4 revisions + 3 plan-review passes — do not re-litigate; consult the handoff for what's settled.
+You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's text retrieval + visual prefilter stage 1 + RRF fusion + frame-sampling worker are shipped. Your job this week is design §8 weeks 5 — slices 2 and 3 of the mission stack: visual stage 2 + reranker, then LangGraph generation loop. The design is paid for in blood across 4 revisions + 3 plan-review passes — do not re-litigate; consult the handoff for what's settled.
 </role>
 
 <repo_state>
 Working directory: /Users/aswinsreenivas/1_Code/1.1_personal/lensgraph/
-HEAD: 70c5a19 docs(handoff): correct HEAD pointer + fast-test count after pre-flight fix
+HEAD: 645c37e chore: ruff format sweep across the tree
+  (or later — a docs(handoff) commit for slice-1 closeout may land on top)
 
-Last 10 commits (context, do not re-litigate):
+Last 12 commits (context, do not re-litigate):
+  645c37e chore: ruff format sweep across the tree
+  45575df fix(ingest,readiness): slice-1 review hardening
+  3c47a4c feat(ingest): frame-sampling worker — slice 1 of phase-1 week-5
   70c5a19 docs(handoff): correct HEAD pointer + fast-test count after pre-flight fix
   8b7b37c docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix
   2e28dce fix(embed): config-driven ColQwen2.5 model id + lazy resolver tests
@@ -16,24 +20,25 @@ Last 10 commits (context, do not re-litigate):
   3f3f1c9 feat(retrieve): RRF fusion module + closed-form synthetic tests
   82c0d47 fix(retrieve): BM25 OR-fallback for natural-language queries
   5806e6f feat(retrieve): four text retrieval channels (bm25 + dense + sparse + multivec)
-  9c716e5 fix(ingest): per-chunk readiness + cli_all exit codes + Makefile CORPUS
-  5016064 feat(ingest): chunk + embed_text handlers + ingest-all CLI + bakeoff tokens
-  8036813 feat(db,queues): chunks + embeds repos + pgmq.send_batch
-  6b2f921 fix(embed): config-driven model id + sparse normalization + lazy-load test + decouple migration test
-  37fd978 feat(embed): BGE-M3 lazy singleton with three-channel encode
 
-Gates green at HEAD (verified after the pre-flight ColQwen config fix):
+Gates green at HEAD (verified after slice 1 + review fixes):
   make validate-evals-strict   OK (0 warnings, 11 verified gold)
   make phase0-gate             OK (11/3 across 3 talks)
-  make test                    OK (41 fast tests)
+  make test                    OK (46 fast tests)
   make lint                    OK
 
 DB state (resumes from named volume pgdata after make db-up):
   3 talks ingested (ai_engineering_v0 corpus)
   212 chunks + 212 dense + 212 sparse + 73,621 chunk_token_embeds rows
-  frames table EMPTY (frame-sampling worker is your slice 1 deliverable)
+  frames table populated once at least one .mp4 is staged under
+    videos/ai_engineering_v0/ (none staged as of this writing)
 
-Slice 0 / visual stage-1 gate — CLOSED 2026-05-25. `eval/tests/test_visual_prefilter.py` 4/4 slow tests passed in 38.08s against the live container. The pre-flight `2e28dce` commit pulled the ColQwen2.5 model id from `eval/config/model_candidates.yaml` so no string is hardcoded anymore. Slice 1 (frames worker) is the next thing to ship.
+Slice 0 / visual stage-1 gate — CLOSED 2026-05-25.
+Slice 1 / frame-sampling worker — CLOSED 2026-05-26. Frames substrate is
+end-to-end (sampler + idempotent repo + handler + cli_all drain with
+required-videos guard); visual readiness shows in bakeoff-prep without
+coupling to text readiness. Slice 2 (visual stage 2 + reranker) is the
+next thing to ship.
 </repo_state>
 
 <reading_order>
@@ -81,23 +86,19 @@ Three slices, take them in order. Each verifies before the next begins. Stop aft
 
 == Slice 0 — CLOSED 2026-05-25 ==
 
-`eval/tests/test_visual_prefilter.py` 4/4 slow tests passed in 38.08s against the live container. ColQwen2.5 v0.2 model resolved from `eval/config/model_candidates.yaml`. Ready to begin slice 1.
+`eval/tests/test_visual_prefilter.py` 4/4 slow tests passed in 38.08s. ColQwen2.5 v0.2 resolved from `eval/config/model_candidates.yaml`.
 
-== Slice 1 — Frame sampler worker (design §8 steps 22-23) ==
+== Slice 1 — CLOSED 2026-05-26 ==
 
-Functional surface:
-- `ingest/frames.py` — public `sample(video_path, *, every_sec=10.0) -> list[Frame]`. Subprocess to ffmpeg; writes JPEG/PNG to a stable per-video directory; computes sha256 per frame; returns Frame dataclasses (matches the frames table FK shape).
-- `ingest/handlers.py::frames_handler(conn, payload)` — mirrors `embed_text_handler`'s shape. Payload `{video_id, step:"frame_sample", entity_id:0}`. Reads talk's video path (you'll need to extend talks.yaml or use the transcript_path directory + a sibling .mp4 convention — your call, document in commit body), runs `frames.sample()`, inserts frames rows. **Does NOT compute pooled embeddings yet** — that fans out to a separate step (see slice 2).
-- `ingest/cli_all.py` — drain the ingest_frames queue after ingest_chunk and ingest_embed_text.
+Shipped across `3c47a4c feat(ingest)` + `45575df fix(ingest,readiness)` + `645c37e chore`. Frames substrate is end-to-end:
 
-RED: `eval/tests/test_frames.py` — synthetic short video (use ffmpeg `lavfi` source: `ffmpeg -f lavfi -i color=c=red:s=320x240:d=60` to generate a 60s test asset, or bundle a fixture). Sample at 10s intervals → 6 frames. sha256 stable across runs.
+- `ingest/frames.py` — `sample(video_path, *, video_id, every_sec, start_sec, duration_sec, out_dir)` via ffmpeg subprocess, PNG + bitexact for stable sha256. `frame_sec` is RELATIVE to talk zero (chapter slices use parent `source_video_id` window). `default_video_path_for_talk()` handles BOTH relative and absolute transcript paths via `Path(...).parent.name`.
+- `db/repos/frames.py` — idempotent upsert on `UNIQUE(video_id, frame_sec)`; `pooled_embedding` preserved under re-run (slice 2 owns that column).
+- `ingest/handlers.py::frames_handler` — persists frames + fans out `embed_frames` status rows + `ingest_embed_frames` messages.
+- `ingest/cli_all.py` — drains `ingest_frames` after `ingest_chunk`+`ingest_embed_text`. Required-videos guard enumerates expected `.mp4` paths (deduped on chapter-slice parents) and branches: no visual talks → skip exit 0; zero staged → skip exit 0; partial staged → skip + force exit 1 + print missing; all staged → drain.
+- `ingest/readiness.py` — `VideoReadiness.frame_sample_status` + `frames_n` informational fields (NOT part of `complete`); `scripts/bakeoff_prep.py` shows them under the new `frames` column.
 
-Verification artifact:
-  make ingest VIDEO_ID=W_CYk2ogcDI                # already works
-  # …new: frames are sampled + inserted; ingest_step_status flips fetch=done, frame_sample=pending → drained → completed
-  make bakeoff-prep                                # now shows frame_sample status per video
-
-Out of scope this slice: pooled embedding population (the embeds.upsert_pooled call), patches (the encode_image_patches function).
+Slow suite: `test_frames.py` 15, `test_handlers_slow.py::*frames*` 3, `test_cli_all_slow.py` 6, `test_readiness.py` 11. All green.
 
 == Slice 2 — Visual stage 2 (patches + MaxSim) + reranker (design §8 steps 24-27) ==
 
@@ -175,24 +176,25 @@ Avoid this week:
 Run these in order before any code. Verify state matches <repo_state>; if it does not, surface the delta before proceeding.
 
 1. git log --oneline -5
-   Top should be: c199a2f feat(retrieve): visual prefilter stage 1 — ColQwen pooled + cosine HNSW
+   Top should be: 645c37e chore: ruff format sweep across the tree
+   (or a docs(handoff) slice-1-closeout commit on top of that)
 
 2. make validate-evals-strict     # 0 warnings, 11 verified examples
 3. make phase0-gate                # OK (11/3)
-4. make test                       # 41 passed (33 at c199a2f + 5 ColQwen lazy + 3 reconcile)
+4. make test                       # 46 passed
 5. make lint                       # clean
 
 6. Read dev/active/phase-1-week-5/handoff.md (the operational guide).
 
 7. Skim docs/phase-1-design.md §4, §5, §8 weeks 5.
 
-Slice 0 already CLOSED in a previous session — no need to re-run the visual slow suite unless you've changed `embed/colqwen.py` or the frames table schema.
+Slice 0 (visual stage 1) AND Slice 1 (frame-sampling worker) are both CLOSED — no need to re-run their slow suites unless you've changed code under `embed/colqwen.py`, `db/migrations/`, or `ingest/frames.py`.
 
-Only when 1-6 are green: begin slice 1 (frames worker).
+Only when 1-5 are green: begin slice 2 (visual stage 2 + reranker).
 </first_actions>
 
 <instructions>
-Execute <first_actions>. Verify everything green INCLUDING the deferred visual slow suite. Then ship the three week-5 slices in order per <mission_stack>.
+Execute <first_actions>. Then ship the remaining week-5 slices (2 and 3) in order per <mission_stack>.
 
 The execution rhythm per slice:
   1. Spawn a TeamCreate team with 2 teammates on disjoint files.

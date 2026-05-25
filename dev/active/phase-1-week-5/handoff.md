@@ -1,10 +1,10 @@
 # Handoff — Phase 1, Week 5 (frames worker + reranker + LangGraph)
 
-**Written:** 2026-05-25, end of week-4 retrieval session
+**Written:** 2026-05-25, end of week-4 retrieval session (last updated 2026-05-26 after slice-1 fix slice)
 **Read by:** the next session, before any implementation
 **Authoritative design:** `docs/phase-1-design.md` rev 4 (commit `e950583`)
-**Branch head:** `70c5a19` `docs(handoff): correct HEAD pointer + fast-test count after pre-flight fix`
-**Pre-flight fix on top of session-start head:** `2e28dce fix(embed): config-driven ColQwen2.5 model id + lazy resolver tests` (yaml-pinned to `vidore/colqwen2.5-v0.2`; removes the last hardcoded model string from `embed/colqwen.py`).
+**Branch head:** `645c37e` `chore: ruff format sweep across the tree`
+**Slice 1 commits on top of session-start head:** `3c47a4c feat(ingest): frame-sampling worker — slice 1 of phase-1 week-5`, then `45575df fix(ingest,readiness): slice-1 review hardening` (absolute paths + required-videos guard + frame_sample readiness), then `645c37e chore: ruff format sweep across the tree`.
 
 ---
 
@@ -21,29 +21,30 @@ Two pieces ship in the most recent slice:
 ### Gates green at HEAD
 
 ```
-make test                41 fast tests pass (33 at c199a2f + 5 ColQwen lazy resolver + 3 reconcile)
+make test                46 fast tests pass (41 at 70c5a19 + 5 frames_handler fast)
 make lint                clean
 make phase0-gate         OK (11/3 verified gold across distinct talks)
 make validate-evals-strict  clean
 ```
 
-Per-suite slow counts (verified against the live container during the slice; ~1-2 min total when warm):
+Per-suite counts (verified against the live container; ~12s slow total when warm):
 ```
-test_db_migrations      12
-test_talks_repo         19
-test_pgmq_smoke         13
-test_handlers_slow       5
-test_chunks_repo         5
-test_embeds_repo         7
-test_readiness           6
-test_cli_all_slow        3
-test_channels_smoke     20  (4 channels × 5 test shapes)
-test_bge_m3              6
-test_handlers_fast       3  (fast, picked up by make test)
+test_db_migrations      12  (slow)
+test_talks_repo         19  (slow)
+test_pgmq_smoke         13  (slow)
+test_chunks_repo         5  (slow)
+test_embeds_repo         7  (slow)
+test_handlers_slow       8  (slow — 5 chunk/embed_text + 3 frames_handler)
+test_readiness          11  (slow — 6 original + 5 frame_sample exposure)
+test_cli_all_slow        6  (slow — 3 fetch/readiness + 3 required-videos guard)
+test_channels_smoke     20  (slow — 4 channels × 5 test shapes)
+test_bge_m3              6  (slow)
+test_visual_prefilter    4  (slow — CLOSED 2026-05-25, 4 passed in 38.08s)
+test_frames             15  (slow — 13 sampler/repo + 2 absolute-path regressions)
+test_handlers_fast       8  (fast — 3 chunk + 5 frames_handler)
 test_bge_m3_lazy         1  (fast)
-test_rrf                14  (fast, +3 provenance)
-test_colqwen_lazy        5  (fast, config-driven resolver + zero-input short-circuits)
-test_visual_prefilter    4  (slow, CLOSED — 4 passed in 38.08s against the live container)
+test_rrf                14  (fast)
+test_colqwen_lazy        5  (fast)
 ```
 
 ### Slice 0 / visual stage-1 verification gate — CLOSED
@@ -53,6 +54,17 @@ test_visual_prefilter    4  (slow, CLOSED — 4 passed in 38.08s against the liv
 The pre-flight `2e28dce fix(embed)` commit pulled the model id from `eval/config/model_candidates.yaml::candidates.visual_retrieval[colqwen2.5]` (provider validated as `local`) — no string is hardcoded in `embed/colqwen.py` anymore.
 
 If a future colpali-engine release shifts the export path away from `colpali_engine.models.ColQwen2_5` + `ColQwen2_5_Processor`, `_model()` in `embed/colqwen.py` needs adjustment. Probed on 0.3.16 and confirmed those exports exist.
+
+### Slice 1 / frame-sampling worker — CLOSED
+
+**Status: CLOSED 2026-05-26 (review fixes folded in).** `3c47a4c feat(ingest)` shipped the frame-sampling worker end-to-end: `ingest/frames.py::sample()` (ffmpeg subprocess, PNG + bitexact for stable sha256, frame_sec relative to the talk), `db/repos/frames.py` (idempotent on `(video_id, frame_sec)`, never touches `pooled_embedding`), `ingest/handlers.py::frames_handler` (persists frames + fans out `embed_frames` status rows + `ingest_embed_frames` messages), `ingest/cli_all.py` drain wiring.
+
+`45575df fix(ingest,readiness)` then hardened three review gaps:
+  1. `default_video_path_for_talk()` now handles both relative and absolute `transcript_path` (the production `paths_from_talks_yaml()` resolves absolute; the prior `parts[0] == "transcripts"` check silently mis-routed to "_default" for absolute paths).
+  2. `cli_all` frames-drain guard now enumerates required `.mp4` paths from visual-tagged talks (deduped on chapter-slice parents) and branches: no visual talks → skip exit 0; zero staged → skip exit 0; partial staged → skip + force exit 1 + print missing; all staged → drain. The prior "any file under videos/&lt;corpus&gt;" gate let an unrelated file enable the drain → infinite-loop on missing `.mp4` redeliveries.
+  3. `VideoReadiness` gains `frame_sample_status: str | None` + `frames_n: int`; both informational and explicitly excluded from `complete`. `scripts/bakeoff_prep.py` gets a "frames" column rendering each state (—, skipped, pending, in_progress, ✓ (N), ✗ failed).
+
+Visual stage 2 (per-patch ColQwen + MaxSim), reranker, and LangGraph loop remain deferred to slices 2 and 3.
 
 ---
 
@@ -67,15 +79,16 @@ If a future colpali-engine release shifts the export path away from `colpali_eng
 | `embed/colqwen.py` | `encode_image_pooled` + `encode_text_query` (stage 1); patches deferred |
 | `db/repos/{talks,chunks,embeds,ingest_step_status}.py` | full CRUD; 1-based sparsevec; idempotent |
 | `queues/{pgmq_client,workers}.py` | send / send_batch / process_one with full transactional contract |
-| `ingest/{fetch,quality,pipeline,handlers,cli,cli_all}.py` | fetch + chunk + embed_text handlers; CORPUS-driven ingest-all |
+| `ingest/{fetch,quality,pipeline,handlers,cli,cli_all,frames,readiness}.py` | fetch + chunk + embed_text + frame_sample handlers; CORPUS-driven ingest-all with required-videos guard |
+| `db/repos/{talks,chunks,embeds,frames,ingest_step_status}.py` | full CRUD; 1-based sparsevec; idempotent (frames upsert preserves pooled_embedding under re-run) |
 | `retrieve/{bm25,dense,sparse,multivec,visual,rrf}.py` | 4 text channels + visual stage 1 + RRF fusion with channel_ranks |
-| `scripts/bakeoff_prep.py` | per-chunk strict readiness with N/M counts |
+| `scripts/bakeoff_prep.py` | per-chunk strict text readiness with N/M counts + visual `frames` column (status + count) |
 
 ### Deferred (per design §8 weeks 5+)
 
 | Step | Surface |
 |---|---|
-| 22-23 | `ingest/frames.py` — ffmpeg frame sampler + frames-table writer (the **producer** for visual.retrieve_frames) |
+| 22-23 | ✅ **CLOSED slice 1** — `ingest/frames.py` ffmpeg sampler + `db/repos/frames.py` + `frames_handler` + cli_all drain + required-videos guard |
 | 24-25 | `embed/colqwen.py::encode_image_patches()` — per-patch embeddings + MaxSim stage 2 in `retrieve/visual.py` |
 | 26-27 | `retrieve/rerank.py` — BGE-reranker-v2-m3 on the RRF top-K |
 | 28-31 | `eval/runners/minimal_generation.py` + `generate/` LangGraph nodes (plan/retrieve/rerank/verify/generate/cite) + `generate/state.py` + `generate/trace.py` + `db/repos/traces.py` |
@@ -94,23 +107,16 @@ In order. Stop if any is red.
 
 ```bash
 git log --oneline -5
-# Top should be: c199a2f feat(retrieve): visual prefilter stage 1 ...
+# Top should be: 645c37e chore: ruff format sweep across the tree
 
 make validate-evals-strict
 make phase0-gate
 make test
 make lint
-# All four must pass.
-
-# Then close the open visual gate:
-make db-up
-make db-migrate
-uv run pytest eval/tests/test_visual_prefilter.py -q -m slow
-# 4 passed. Heavy first run (~10-15 min) due to ColQwen download.
-make db-down
+# All four must pass (46 fast tests).
 ```
 
-If the visual suite fails: triage in `embed/colqwen.py`. The pgvector cosine query is a copy of `retrieve/dense.py` (proven to work). The likely failure is either (a) colpali-engine API drift since 0.3.16 — adjust the import path, OR (b) `POOLED_DIM` mismatch — the runtime assertion in `encode_image_pooled` will raise loudly with the actual dim, then update both `POOLED_DIM` and `db/migrations/0003_frames.sql` accordingly (and add a new migration if you've already deployed elsewhere).
+Slice 0 (visual stage 1) and Slice 1 (frame-sampling worker) are both CLOSED. Begin Slice 2 once the gates are green — no prerequisite slow-suite re-run needed unless you've changed code under `embed/`, `db/migrations/`, or `ingest/frames.py`.
 
 ---
 
@@ -133,14 +139,11 @@ Skim only (stable for the next few sessions):
 
 Three slices, sized for ~one session each. Take them in order; each verifies before the next begins.
 
-### Slice 1 — Frames worker (design §8 steps 22-23)
+### Slice 1 — Frames worker (design §8 steps 22-23) — ✅ CLOSED 2026-05-26
 
-- `ingest/frames.py` — ffmpeg subprocess sampling frames every N seconds; writes frames rows + computes sha256
-- ingest_frames PGMQ handler in `ingest/handlers.py::frames_handler` mirroring `embed_text_handler`'s shape
-- Slow test: 60s synthetic video (use ffmpeg to generate test asset) → handler runs → frames table populated; sha256 stable across re-runs
-- `make ingest-all` drains the ingest_frames queue after ingest_chunk
+Shipped across `3c47a4c feat(ingest)` + `45575df fix(ingest,readiness)` + `645c37e chore`. Frames substrate is end-to-end: ffmpeg sampler, idempotent repo, fan-out handler, cli_all drain with strict required-videos guard. Visual readiness is now visible in bakeoff-prep without coupling to text readiness.
 
-### Slice 2 — Visual stage 2 + reranker (design §8 steps 24-27)
+### Slice 2 — Visual stage 2 + reranker (design §8 steps 24-27) — NEXT
 
 - `embed/colqwen.py::encode_image_patches()` — per-patch embeddings (deferred from this session)
 - `retrieve/visual.py` extended with stage 2 MaxSim over the prefiltered frame set
