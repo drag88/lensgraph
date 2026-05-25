@@ -145,3 +145,38 @@ def test_get_chunker_returns_callable():
     assert all(isinstance(c, Chunk) for c in result)
     with pytest.raises(KeyError):
         get_chunker("does_not_exist")
+
+
+# -- sentence-snap bound -------------------------------------------------
+
+
+def test_sentence_snap_is_bounded_for_far_boundary():
+    """RED for the bug where _snap_to_sentence trimmed back to ANY sentence
+    boundary regardless of distance. With a short opener cue + a long
+    monologue cue, the unbounded snap would drop the entire monologue (27+
+    words) while leaving end_sec at the monologue's end_sec — text and span
+    misaligned. After the fix, the bounded snap leaves the text alone when
+    the trim distance exceeds the bound; alignment preserved.
+    """
+    vtt = textwrap.dedent(
+        """\
+        WEBVTT
+
+        00:00:00.000 --> 00:00:05.000
+        Brief opener.
+
+        00:00:05.000 --> 00:00:25.000
+        Then a very long extended monologue continues without any further sentence terminators just rambling on and on covering many words but never reaching a period mark
+        """
+    )
+    chunks = chunk(vtt, [], video_id="vid1", window_sec=30.0, overlap_sec=5.0)
+    assert len(chunks) == 1
+    c = chunks[0]
+    # The monologue text MUST be present. Without the bound, snap would
+    # trim back to the period after "Brief opener.", dropping ~27 words.
+    assert "monologue" in c.text
+    assert "rambling" in c.text
+    # Timestamp/text alignment: end_sec matches the last cue's end_sec
+    # (25.0), not the position of the early sentence boundary.
+    assert c.start_sec == pytest.approx(0.0)
+    assert c.end_sec == pytest.approx(25.0)

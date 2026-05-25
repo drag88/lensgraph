@@ -26,6 +26,7 @@ _TIMESTAMP_LINE_RE = re.compile(
     r"^(?P<start>\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})"
 )
 _SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
+_MAX_SNAP_TRIM_WORDS = 12
 
 
 def _ts_to_seconds(ts: str) -> float:
@@ -110,9 +111,11 @@ def _truncate_to_max_tokens(text: str, max_tokens: int) -> tuple[str, int]:
 
 
 def _snap_to_sentence(text: str) -> str:
-    """If `text` does not end on sentence-terminal punctuation, trim back to
-    the last sentence-final delimiter. Returns `text` unchanged when no
-    earlier boundary exists.
+    """If `text` does not end on sentence-terminal punctuation, trim back
+    to the last `. ` / `! ` / `? ` — BUT only when the trim would drop at
+    most _MAX_SNAP_TRIM_WORDS words. Beyond that bound, return text
+    unchanged so the chunker never emits text representing only the early
+    part of a span while keeping the full timestamp range.
     """
     stripped = text.rstrip()
     if not stripped:
@@ -121,6 +124,9 @@ def _snap_to_sentence(text: str) -> str:
         return stripped
     last = max(stripped.rfind(". "), stripped.rfind("! "), stripped.rfind("? "))
     if last == -1:
+        return stripped
+    tail = stripped[last + 1 :]
+    if len(tail.split()) > _MAX_SNAP_TRIM_WORDS:
         return stripped
     return stripped[: last + 1]
 
