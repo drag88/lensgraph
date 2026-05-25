@@ -1,4 +1,4 @@
-"""End-to-end handler tests against real Postgres + real BGE-M3.
+"""End-to-end handler tests against real Postgres + real BGE-M3 + real ffmpeg.
 
 Slow: requires live Postgres reachable at $POSTGRES_DSN. Per-module
 ephemeral DB with migrations + queues pre-created. Per-test TRUNCATE +
@@ -8,17 +8,21 @@ Prove the handler contract end-to-end:
   - chunk_handler reads a real VTT, persists chunks, fans out embed_text.
   - embed_text_handler loads BGE-M3 (once per module) and writes all three
     embed tables for the correct chunk_id.
-  - re-running chunk_handler is idempotent for chunks (queue is NOT — the
-    embed handler's claim_for_update no-ops on the redelivery, verified
-    in test_pgmq_smoke).
-  - a handler crash inside process_one rolls back chunks AND status AND
-    the queue read.
+  - frames_handler runs real ffmpeg against a synth lavfi video, persists
+    frames, writes embed_frames status rows, enqueues ingest_embed_frames.
+  - re-running chunk_handler / frames_handler is idempotent at the
+    chunks / frames table (the queue is NOT — the embed handlers'
+    claim_for_update no-ops on redelivery, verified in test_pgmq_smoke).
+  - a handler crash inside process_one rolls back chunks/frames AND
+    status AND the queue read.
   - the 1-based sparsevec shift round-trips cleanly for token_id 0 AND
     token_id VOCAB_SIZE - 1 (the boundary tokens).
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -34,6 +38,7 @@ from db.repos import ingest_step_status as iss
 from db.repos.talks import Talk
 from db.repos.talks import upsert as upsert_talk
 from embed.bge_m3 import VOCAB_SIZE
+from ingest import frames as frames_mod
 from ingest import handlers
 from queues import pgmq_client, workers
 
@@ -314,3 +319,236 @@ def test_sparsevec_indexing_handles_token_id_0_and_max(conn, tmp_path):
     assert "1:" in text
     assert f"{VOCAB_SIZE}:" in text
 
+
+# -- frames_handler --------------------------------------------------------
+
+
+def _ffmpeg_present() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+@pytest.fixture(scope="module")
+def synth_video(tmp_path_factory):
+    """60s deterministic testsrc video — feeds every frames_handler test below.
+
+    Pinned at module scope so the encode happens once; ~1-2s on this hardware.
+    Skipped cleanly if ffmpeg isn't on PATH so CI hosts without the binary
+    report 'skipped' instead of failing the suite.
+    """
+    if not _ffmpeg_present():
+        pytest.skip("ffmpeg not on PATH")
+    out = tmp_path_factory.mktemp("frames-handler") / "synth_60s.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-y",
+            "-fflags",
+            "+bitexact",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=60:size=320x240:rate=30",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-flags",
+            "+bitexact",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return out
+
+
+def _make_frames_talk(video_id: str, *, duration_sec: int = 60) -> Talk:
+    return Talk(
+        video_id=video_id,
+        title="frames handler test",
+        speaker="S",
+        url="https://example.com/v",
+        duration_sec=duration_sec,
+        format_tags=["slides_heavy"],
+        license="cc-by",
+        captions_source="manual_transcript",
+        transcript_path=f"transcripts/ai_engineering_v0/{video_id}.vtt",
+        transcript_sha256="a" + "0" * 63,
+        accessed_at=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_frames_handler_end_to_end_writes_frames_status_and_enqueues_embed_jobs(
+    conn, tmp_path, monkeypatch, synth_video
+):
+    """Seed talk + frame_sample status + ingest_frames msg. Run process_one.
+    Confirm: frames table populated, embed_frames status rows per frame,
+    ingest_embed_frames queue carries matching payloads. ffmpeg runs for real."""
+    upsert_talk(conn, _make_frames_talk("fr-vid", duration_sec=60))
+    iss.upsert(conn, "fr-vid", step="frame_sample", status="pending")
+    pgmq_client.send(
+        conn,
+        "ingest_frames",
+        {"video_id": "fr-vid", "step": "frame_sample", "entity_id": 0},
+    )
+
+    monkeypatch.setattr(
+        handlers.frames_mod,
+        "default_video_path_for_talk",
+        lambda t: synth_video,
+    )
+    # Pin frame on-disk output under tmp_path so the test doesn't write
+    # under the repo's frames/ dir.
+    orig_sample = frames_mod.sample
+
+    def hermetic_sample(video_path, **kwargs):
+        kwargs.setdefault("out_dir", tmp_path / kwargs["video_id"])
+        return orig_sample(video_path, **kwargs)
+
+    monkeypatch.setattr(handlers.frames_mod, "sample", hermetic_sample)
+
+    with conn.transaction():
+        processed = workers.process_one(conn, "ingest_frames", handlers.frames_handler)
+    assert processed is True
+
+    frame_rows = conn.execute(
+        "SELECT frame_id, frame_sec, sha256 FROM frames "
+        "WHERE video_id = 'fr-vid' ORDER BY frame_sec"
+    ).fetchall()
+    assert len(frame_rows) == 6
+    assert [r[1] for r in frame_rows] == [0.0, 10.0, 20.0, 30.0, 40.0, 50.0]
+    assert all(len(r[2]) == 64 for r in frame_rows)
+    frame_ids = [r[0] for r in frame_rows]
+
+    embed_status_ids = sorted(
+        r[0]
+        for r in conn.execute(
+            "SELECT entity_id FROM ingest_step_status "
+            "WHERE video_id = 'fr-vid' AND step = 'embed_frames'"
+        ).fetchall()
+    )
+    assert embed_status_ids == sorted(frame_ids)
+
+    msgs = pgmq_client.read(conn, "ingest_embed_frames", vt=30, qty=len(frame_ids))
+    assert len(msgs) == len(frame_ids)
+    assert sorted(m.message["entity_id"] for m in msgs) == sorted(frame_ids)
+    assert all(m.message["video_id"] == "fr-vid" for m in msgs)
+    assert all(m.message["step"] == "embed_frames" for m in msgs)
+
+    # pooled_embedding stays NULL — slice 2 owns that column.
+    nulls = conn.execute(
+        "SELECT count(*) FROM frames "
+        "WHERE video_id = 'fr-vid' AND pooled_embedding IS NULL"
+    ).fetchone()[0]
+    assert nulls == 6
+
+
+def test_frames_handler_retry_does_not_duplicate_frames(
+    conn, tmp_path, monkeypatch, synth_video
+):
+    """Re-running frames_handler for the same payload returns the same frame_ids
+    without inserting duplicates. Queue is NOT idempotent — the embed_frames
+    handler's claim_for_update no-ops on its own redelivery (verified in
+    test_pgmq_smoke for chunk_handler's mirror)."""
+    upsert_talk(conn, _make_frames_talk("retry-fr", duration_sec=30))
+    iss.upsert(conn, "retry-fr", step="frame_sample", status="pending")
+
+    monkeypatch.setattr(
+        handlers.frames_mod,
+        "default_video_path_for_talk",
+        lambda t: synth_video,
+    )
+    orig_sample = frames_mod.sample
+
+    def hermetic_sample(video_path, **kwargs):
+        kwargs.setdefault("out_dir", tmp_path / kwargs["video_id"])
+        return orig_sample(video_path, **kwargs)
+
+    monkeypatch.setattr(handlers.frames_mod, "sample", hermetic_sample)
+
+    with conn.transaction():
+        handlers.frames_handler(
+            conn,
+            {"video_id": "retry-fr", "step": "frame_sample", "entity_id": 0},
+        )
+
+    first_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT frame_id FROM frames WHERE video_id = 'retry-fr' "
+            "ORDER BY frame_sec"
+        ).fetchall()
+    ]
+    assert len(first_ids) >= 1
+
+    with conn.transaction():
+        handlers.frames_handler(
+            conn,
+            {"video_id": "retry-fr", "step": "frame_sample", "entity_id": 0},
+        )
+
+    second_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT frame_id FROM frames WHERE video_id = 'retry-fr' "
+            "ORDER BY frame_sec"
+        ).fetchall()
+    ]
+    assert second_ids == first_ids
+
+
+def test_frames_handler_crash_rolls_back_frames_status_and_message(
+    conn, tmp_path, monkeypatch, synth_video
+):
+    """If frames_repo.upsert raises, process_one's caller transaction rolls
+    back: no frames row, status reverted to pending/0 attempts, the message
+    redelivers."""
+    upsert_talk(conn, _make_frames_talk("crash-fr", duration_sec=30))
+    iss.upsert(conn, "crash-fr", step="frame_sample", status="pending")
+    pgmq_client.send(
+        conn,
+        "ingest_frames",
+        {"video_id": "crash-fr", "step": "frame_sample", "entity_id": 0},
+    )
+
+    monkeypatch.setattr(
+        handlers.frames_mod,
+        "default_video_path_for_talk",
+        lambda t: synth_video,
+    )
+    orig_sample = frames_mod.sample
+
+    def hermetic_sample(video_path, **kwargs):
+        kwargs.setdefault("out_dir", tmp_path / kwargs["video_id"])
+        return orig_sample(video_path, **kwargs)
+
+    monkeypatch.setattr(handlers.frames_mod, "sample", hermetic_sample)
+
+    def boom(c, samples):
+        raise RuntimeError("simulated frames upsert failure")
+
+    monkeypatch.setattr(handlers.frames_repo, "upsert", boom)
+
+    with pytest.raises(RuntimeError, match="simulated frames upsert failure"):
+        with conn.transaction():
+            workers.process_one(conn, "ingest_frames", handlers.frames_handler)
+
+    n = conn.execute(
+        "SELECT count(*) FROM frames WHERE video_id = 'crash-fr'"
+    ).fetchone()[0]
+    assert n == 0
+
+    status_row = conn.execute(
+        "SELECT status, attempts FROM ingest_step_status "
+        "WHERE video_id = 'crash-fr' AND step = 'frame_sample'"
+    ).fetchone()
+    assert status_row == ("pending", 0)
+
+    msgs = pgmq_client.read(conn, "ingest_frames", vt=30, qty=1)
+    assert len(msgs) == 1
+    assert msgs[0].message["video_id"] == "crash-fr"

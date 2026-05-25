@@ -11,6 +11,11 @@ After all talks processed:
   3. Drain ingest_embed_text queue via process_one(embed_text_handler)
      until empty. The first embed_text call loads the BGE-M3 model
      (~10s warm, ~78s cold). Subsequent calls per chunk: ~1s on MPS.
+  4. Drain ingest_frames queue via process_one(frames_handler) until empty.
+     Requires pre-staged .mp4 files under ``videos/<corpus>/<id>.mp4`` —
+     handler raises FileNotFoundError per video otherwise (the message
+     rolls back to the queue and the rest of the corpus continues).
+     embed_frames messages enqueued here drain in slice 2.
 
 One-shot driver — runs to completion and exits. The long-running multi-queue
 worker arrives in a later slice.
@@ -32,7 +37,7 @@ from db.conn import dsn as resolve_dsn
 from db.repos.talks import Talk
 from ingest import readiness
 from ingest.fetch import LocalFsFetcher, paths_from_talks_yaml
-from ingest.handlers import chunk_handler, embed_text_handler
+from ingest.handlers import chunk_handler, embed_text_handler, frames_handler
 from ingest.pipeline import fetch_reconcile
 from queues import pgmq_client, workers
 
@@ -134,9 +139,29 @@ def main(argv: list[str] | None = None) -> int:
         embed_drained = _drain(conn, "ingest_embed_text", embed_text_handler)
         print(f"drained {embed_drained} from ingest_embed_text")
 
+        # Frames drain depends on pre-staged .mp4 files under
+        # ``videos/<corpus>/``. Without those, frames_handler raises
+        # FileNotFoundError and _drain would retry-loop forever (the
+        # message becomes visible again on every rollback). Skip cleanly
+        # so operators can stage videos out of band without blocking the
+        # text-only ingest.
+        videos_root = REPO_ROOT / "videos" / args.corpus
+        has_videos = videos_root.exists() and any(videos_root.iterdir())
+        if has_videos:
+            frames_drained = _drain(conn, "ingest_frames", frames_handler)
+            print(f"drained {frames_drained} from ingest_frames")
+        else:
+            frames_drained = 0
+            print(
+                f"skipping ingest_frames drain — no files under "
+                f"{videos_root.relative_to(REPO_ROOT)}; stage .mp4 files "
+                "there and rerun to populate frames"
+            )
+
         print(
             f"summary: corpus={args.corpus} videos={len(talks)} "
-            f"chunk_msgs={chunk_drained} embed_msgs={embed_drained}"
+            f"chunk_msgs={chunk_drained} embed_msgs={embed_drained} "
+            f"frames_msgs={frames_drained}"
         )
         for vid, status in per_video_fetch.items():
             print(f"  {vid}: {status}")

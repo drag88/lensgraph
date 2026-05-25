@@ -14,6 +14,12 @@ __pycache__/
 transcripts/*
 !transcripts/.gitkeep
 
+# Local video files (do not redistribute upstream content)
+videos/
+
+# Sampled frame images (regenerable from videos/ + ingest.frames)
+frames/
+
 # Draft eval examples — work in progress, not yet verified, must never reach the corpus
 eval/corpora/**/*.draft.jsonl
 
