@@ -4,9 +4,11 @@ You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's tex
 
 <repo_state>
 Working directory: /Users/aswinsreenivas/1_Code/1.1_personal/lensgraph/
-HEAD: c199a2f feat(retrieve): visual prefilter stage 1 — ColQwen pooled + cosine HNSW
+HEAD: f2fd3a2 docs(handoff): phase-1 week-5 session handoff + kickoff prompt
+  (or later — a fix(embed) ColQwen-config commit may land on top before slice 0)
 
 Last 10 commits (context, do not re-litigate):
+  f2fd3a2 docs(handoff): phase-1 week-5 session handoff + kickoff prompt
   c199a2f feat(retrieve): visual prefilter stage 1 — ColQwen pooled + cosine HNSW
   baffa55 fix(retrieve): RRF returns FusedResult with channel_ranks provenance
   3f3f1c9 feat(retrieve): RRF fusion module + closed-form synthetic tests
@@ -21,7 +23,7 @@ Last 10 commits (context, do not re-litigate):
 Gates green at HEAD (verified end of last session):
   make validate-evals-strict   OK (0 warnings, 11 verified gold)
   make phase0-gate             OK (11/3 across 3 talks)
-  make test                    OK (33 fast tests)
+  make test                    OK (36 fast tests)
   make lint                    OK
 
 DB state (resumes from named volume pgdata after make db-up):
@@ -182,7 +184,7 @@ Run these in order before any code. Verify state matches <repo_state>; if it doe
 
 2. make validate-evals-strict     # 0 warnings, 11 verified examples
 3. make phase0-gate                # OK (11/3)
-4. make test                       # 33 passed
+4. make test                       # 36 passed (was 33 before ColQwen-config lazy tests)
 5. make lint                       # clean
 
 6. Read dev/active/phase-1-week-5/handoff.md (the operational guide).

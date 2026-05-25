@@ -20,7 +20,7 @@ Two pieces ship in the most recent slice:
 ### Gates green at HEAD
 
 ```
-make test                33 fast tests pass (was 22 last week; +11 RRF)
+make test                36 fast tests pass (was 22 → 33 → 36 with ColQwen lazy resolver)
 make lint                clean
 make phase0-gate         OK (11/3 verified gold across distinct talks)
 make validate-evals-strict  clean
@@ -41,6 +41,7 @@ test_bge_m3              6
 test_handlers_fast       3  (fast, picked up by make test)
 test_bge_m3_lazy         1  (fast)
 test_rrf                14  (fast, +3 provenance)
+test_colqwen_lazy        5  (fast, config-driven resolver + zero-input short-circuits)
 test_visual_prefilter    4  (slow, DEFERRED — see below)
 ```
 
