@@ -147,3 +147,164 @@ def test_cli_all_main_returns_int_type(clean_db, tmp_path, monkeypatch):
     rc = cli_all.main(["--corpus", "empty_corpus"])
     assert isinstance(rc, int)
     assert rc == 0
+
+
+# -- frames-drain gate ----------------------------------------------------
+
+
+def _stage_vtt(transcripts_dir, name: str) -> tuple[str, str]:
+    """Write a tiny VTT under `transcripts_dir/name` and return
+    (relative_repo_path, sha256). Mirrors the helper used in
+    test_cli_all_returns_nonzero_when_readiness_incomplete."""
+    import hashlib
+
+    transcripts_dir.mkdir(parents=True, exist_ok=True)
+    vtt = transcripts_dir / name
+    vtt.write_text(
+        "WEBVTT\n\n"
+        "00:00:00.000 --> 00:00:10.000\n"
+        "first cue body text\n\n"
+        "00:00:10.000 --> 00:00:20.000\n"
+        "second cue body text\n",
+        encoding="utf-8",
+    )
+    return f"transcripts/{name}", hashlib.sha256(vtt.read_bytes()).hexdigest()
+
+
+def test_cli_all_skips_frames_drain_when_no_visual_talks_in_corpus(
+    clean_db, tmp_path, monkeypatch, capsys
+):
+    """A corpus with only `narrative` format_tags has zero visual talks →
+    zero required .mp4s → frames drain is skipped cleanly with exit 0.
+    The text-only ingest path must not be blocked by the visual gate."""
+    rel, sha = _stage_vtt(tmp_path / "transcripts", "novisual.vtt")
+    corpora_root = tmp_path / "eval" / "corpora" / "novisual_corpus"
+    corpora_root.mkdir(parents=True)
+    (corpora_root / "talks.yaml").write_text(
+        "- video_id: nv-vid\n"
+        '  title: "Narrative Only"\n'
+        '  speaker: "S"\n'
+        '  url: "https://example.com/n"\n'
+        "  duration_sec: 20\n"
+        "  format_tags: [narrative]\n"
+        "  license: cc-by\n"
+        "  captions_source: manual_transcript\n"
+        f'  transcript_path: "{rel}"\n'
+        f'  transcript_sha256: "{sha}"\n'
+        '  accessed_at: "2025-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+
+    from ingest import cli_all
+
+    monkeypatch.setattr(cli_all, "REPO_ROOT", tmp_path)
+    # Stub drain so we don't need to load BGE-M3 for this gate test.
+    monkeypatch.setattr(cli_all, "_drain", lambda c, q, h: 0)
+
+    exit_code = cli_all.main(["--corpus", "novisual_corpus"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "skipping ingest_frames drain" in out
+    assert "no visual talks" in out
+
+
+def test_cli_all_skips_frames_drain_when_zero_required_videos_staged(
+    clean_db, tmp_path, monkeypatch, capsys
+):
+    """A corpus with a slides_heavy talk but NO .mp4 staged anywhere
+    (videos/ dir doesn't even exist) → skip cleanly with exit 0. Operators
+    stage videos out of band; the text-only path must not be blocked."""
+    rel, sha = _stage_vtt(tmp_path / "transcripts", "slides.vtt")
+    corpora_root = tmp_path / "eval" / "corpora" / "slides_corpus"
+    corpora_root.mkdir(parents=True)
+    (corpora_root / "talks.yaml").write_text(
+        "- video_id: sh-vid\n"
+        '  title: "Slides Heavy No Video"\n'
+        '  speaker: "S"\n'
+        '  url: "https://example.com/s"\n'
+        "  duration_sec: 20\n"
+        "  format_tags: [slides_heavy]\n"
+        "  license: cc-by\n"
+        "  captions_source: manual_transcript\n"
+        f'  transcript_path: "{rel}"\n'
+        f'  transcript_sha256: "{sha}"\n'
+        '  accessed_at: "2025-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+
+    from ingest import cli_all
+
+    monkeypatch.setattr(cli_all, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli_all, "_drain", lambda c, q, h: 0)
+
+    assert not (tmp_path / "videos").exists()  # invariant: no videos/ dir
+    exit_code = cli_all.main(["--corpus", "slides_corpus"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "skipping ingest_frames drain" in out
+    assert "no local videos staged" in out
+
+
+def test_cli_all_returns_nonzero_when_some_required_videos_missing(
+    clean_db, tmp_path, monkeypatch, capsys
+):
+    """Two slides_heavy talks, one .mp4 staged. The drain MUST NOT run
+    (partial drain still infinite-loops on the missing one), AND main()
+    must exit nonzero so CI surfaces the gap."""
+    rel_a, sha_a = _stage_vtt(tmp_path / "transcripts", "a.vtt")
+    rel_b, sha_b = _stage_vtt(tmp_path / "transcripts", "b.vtt")
+    corpora_root = tmp_path / "eval" / "corpora" / "partial_corpus"
+    corpora_root.mkdir(parents=True)
+    (corpora_root / "talks.yaml").write_text(
+        "- video_id: vid-a\n"
+        '  title: "A"\n'
+        '  speaker: "S"\n'
+        '  url: "https://example.com/a"\n'
+        "  duration_sec: 20\n"
+        "  format_tags: [slides_heavy]\n"
+        "  license: cc-by\n"
+        "  captions_source: manual_transcript\n"
+        f'  transcript_path: "{rel_a}"\n'
+        f'  transcript_sha256: "{sha_a}"\n'
+        '  accessed_at: "2025-01-01T00:00:00Z"\n'
+        "- video_id: vid-b\n"
+        '  title: "B"\n'
+        '  speaker: "S"\n'
+        '  url: "https://example.com/b"\n'
+        "  duration_sec: 20\n"
+        "  format_tags: [slides_heavy]\n"
+        "  license: cc-by\n"
+        "  captions_source: manual_transcript\n"
+        f'  transcript_path: "{rel_b}"\n'
+        f'  transcript_sha256: "{sha_b}"\n'
+        '  accessed_at: "2025-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+
+    # Stage ONLY vid-a.mp4; vid-b.mp4 is intentionally missing.
+    videos_dir = tmp_path / "videos" / "partial_corpus"
+    videos_dir.mkdir(parents=True)
+    (videos_dir / "vid-a.mp4").touch()
+
+    from ingest import cli_all
+
+    monkeypatch.setattr(cli_all, "REPO_ROOT", tmp_path)
+    # Stub drain to assert it is NEVER called for ingest_frames in this case
+    # (partial drain would retry-loop forever on the missing video).
+    drained_queues: list[str] = []
+
+    def fake_drain(conn, queue, handler):
+        drained_queues.append(queue)
+        return 0
+
+    monkeypatch.setattr(cli_all, "_drain", fake_drain)
+
+    exit_code = cli_all.main(["--corpus", "partial_corpus"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "ingest_frames" not in drained_queues  # drain skipped, as designed
+    assert "1 of 2 required videos missing" in out
+    assert "vid-b.mp4" in out

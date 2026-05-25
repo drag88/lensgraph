@@ -40,6 +40,27 @@ def _fmt_ratio(n: int, denom: int) -> str:
     return f"{_mark(ok)} ({n}/{denom})"
 
 
+def _fmt_frames(status: str | None, n: int) -> str:
+    """Render the visual `frame_sample` cell.
+
+    Informational only — visual progress does not gate text readiness. A
+    missing row (None) means the sampler has not been scheduled for this
+    video yet; we render that as an em dash rather than ✗ so it does not
+    read as a failure.
+    """
+    if status is None:
+        return "—"
+    if status == "skipped":
+        return "skipped"
+    if status == "completed":
+        return f"✓ ({n})"
+    if status in {"pending", "in_progress"}:
+        return status
+    if status == "failed":
+        return "✗ failed"
+    return status
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scripts.bakeoff_prep",
@@ -64,7 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{'chunks':<10}  "
         f"{'dense':<12}  "
         f"{'sparse':<12}  "
-        f"{'tokens':<12}"
+        f"{'tokens':<12}  "
+        f"{'frames':<12}"
     )
     print(header)
     for r in reports:
@@ -74,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
             f"{_fmt_total(r.chunks_n):<10}  "
             f"{_fmt_ratio(r.dense_n, r.chunks_n):<12}  "
             f"{_fmt_ratio(r.sparse_n, r.chunks_n):<12}  "
-            f"{_fmt_ratio(r.tokens_n, r.chunks_n):<12}"
+            f"{_fmt_ratio(r.tokens_n, r.chunks_n):<12}  "
+            f"{_fmt_frames(r.frame_sample_status, r.frames_n):<12}"
         )
     return 0
 

@@ -266,6 +266,57 @@ def test_default_video_path_uses_source_video_id_for_chapter_slice():
     assert "videos/ai_engineering_v0" in p.as_posix()
 
 
+def test_default_video_path_handles_absolute_transcript_path(tmp_path):
+    """Production paths_from_talks_yaml resolves transcript_path with
+    .resolve() — feeding an absolute path here. The corpus dir name must
+    still come from the immediate parent of the transcript file, not from
+    `parts[0]` (which would be '/' on absolute paths and silently fall
+    into the `_default` corpus bucket)."""
+    abs_transcript = tmp_path / "transcripts" / "ai_engineering_v0" / "W.vtt"
+    talk = Talk(
+        video_id="W",
+        title="abs path",
+        speaker="S",
+        url="https://example.com/v",
+        duration_sec=60,
+        format_tags=["slides_heavy"],
+        license="cc-by",
+        captions_source="manual_transcript",
+        transcript_path=str(abs_transcript),
+        transcript_sha256="a" + "0" * 63,
+        accessed_at=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    p = default_video_path_for_talk(talk)
+    assert p.name == "W.mp4"
+    assert "videos/ai_engineering_v0/W.mp4" in p.as_posix()
+
+
+def test_default_video_path_handles_absolute_transcript_path_for_chapter_slice(tmp_path):
+    """Same as above, but with a chapter slice — physical name comes from
+    source_video_id (parent video shared across siblings), and the corpus
+    dir still resolves from the absolute transcript path's parent."""
+    abs_transcript = tmp_path / "transcripts" / "ai_engineering_v0" / "chap.vtt"
+    talk = Talk(
+        video_id="chap",
+        title="abs chapter",
+        speaker="S",
+        url="https://example.com/v",
+        duration_sec=60,
+        format_tags=["slides_heavy"],
+        license="cc-by",
+        captions_source="manual_transcript",
+        transcript_path=str(abs_transcript),
+        transcript_sha256="a" + "0" * 63,
+        accessed_at=datetime(2025, 1, 1, tzinfo=UTC),
+        source_video_id="PARENT_ID",
+        source_start_sec=60.0,
+        source_end_sec=120.0,
+    )
+    p = default_video_path_for_talk(talk)
+    assert p.name == "PARENT_ID.mp4"
+    assert "videos/ai_engineering_v0/PARENT_ID.mp4" in p.as_posix()
+
+
 # -- frames_repo.upsert idempotency -----------------------------------------
 
 
@@ -288,8 +339,7 @@ def test_upsert_returns_aligned_frame_ids(conn):
     assert all(isinstance(i, int) and i > 0 for i in ids)
     # Confirm rows landed and the returned ids round-trip.
     rows = conn.execute(
-        "SELECT frame_id, frame_sec FROM frames "
-        "WHERE video_id = 'up-1' ORDER BY frame_sec"
+        "SELECT frame_id, frame_sec FROM frames WHERE video_id = 'up-1' ORDER BY frame_sec"
     ).fetchall()
     assert [r[0] for r in rows] == ids
     assert [r[1] for r in rows] == [0.0, 10.0, 20.0]
@@ -345,8 +395,7 @@ def test_upsert_refreshes_image_path_and_sha_but_preserves_pooled_embedding(
     )
 
     row = conn.execute(
-        "SELECT image_path, sha256, pooled_embedding IS NULL "
-        "FROM frames WHERE frame_id = %s",
+        "SELECT image_path, sha256, pooled_embedding IS NULL FROM frames WHERE frame_id = %s",
         (fid,),
     ).fetchone()
     assert row[0] == "/tmp/preserve/new.png"

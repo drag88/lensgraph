@@ -24,6 +24,7 @@ from pgvector.psycopg import register_vector
 
 from db.conn import dsn as resolve_dsn
 from db.migrate import apply
+from db.repos import ingest_step_status as iss
 from db.repos.talks import Talk
 from db.repos.talks import upsert as upsert_talk
 from embed.bge_m3 import VOCAB_SIZE
@@ -55,7 +56,12 @@ def test_db():
 @pytest.fixture
 def conn(test_db):
     with psycopg.connect(test_db, autocommit=True) as c:
-        c.execute("TRUNCATE chunk_token_embeds, sparse_embeds, dense_embeds, chunks, talks CASCADE")
+        # `talks CASCADE` would clean frames + ingest_step_status via FK,
+        # but listing both explicitly documents what each test touches.
+        c.execute(
+            "TRUNCATE chunk_token_embeds, sparse_embeds, dense_embeds, "
+            "chunks, frames, ingest_step_status, talks CASCADE"
+        )
         register_vector(c)
         yield c
 
@@ -210,3 +216,72 @@ def test_missing_talk_reports_incomplete(conn):
     assert r.talks_present is False
     assert r.chunks_n == 0
     assert r.complete is False
+
+
+# -- frame_sample status (visual readiness, informational only) ------------
+
+
+def _insert_frames(conn: psycopg.Connection, video_id: str, n: int) -> None:
+    """Insert n frame rows for video_id via raw SQL. pooled_embedding stays NULL."""
+    for i in range(n):
+        conn.execute(
+            """
+            INSERT INTO frames (video_id, frame_sec, image_path, sha256)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (video_id, float(i), f"/tmp/{video_id}/{i:04d}.jpg", f"{i:064x}"),
+        )
+
+
+def test_readiness_frame_sample_status_none_when_no_row(conn):
+    """No ingest_step_status row → status is None, frames_n == 0."""
+    upsert_talk(conn, _make_talk("vid-no-frame-status"))
+
+    r = for_video(conn, "vid-no-frame-status")
+    assert r.frame_sample_status is None
+    assert r.frames_n == 0
+
+
+def test_readiness_frame_sample_status_pending(conn):
+    upsert_talk(conn, _make_talk("vid-frame-pending"))
+    iss.upsert(conn, "vid-frame-pending", step="frame_sample", status="pending")
+
+    r = for_video(conn, "vid-frame-pending")
+    assert r.frame_sample_status == "pending"
+    assert r.frames_n == 0
+
+
+def test_readiness_frame_sample_status_skipped(conn):
+    upsert_talk(conn, _make_talk("vid-frame-skipped"))
+    iss.upsert(conn, "vid-frame-skipped", step="frame_sample", status="skipped")
+
+    r = for_video(conn, "vid-frame-skipped")
+    assert r.frame_sample_status == "skipped"
+    assert r.frames_n == 0
+
+
+def test_readiness_frame_sample_status_completed_with_frame_count(conn):
+    upsert_talk(conn, _make_talk("vid-frame-done"))
+    iss.upsert(conn, "vid-frame-done", step="frame_sample", status="completed")
+    _insert_frames(conn, "vid-frame-done", 7)
+
+    r = for_video(conn, "vid-frame-done")
+    assert r.frame_sample_status == "completed"
+    assert r.frames_n == 7
+
+
+def test_readiness_frame_sample_does_not_affect_complete_property(conn):
+    """Load-bearing decoupling: visual status MUST NOT gate text readiness.
+    If text channels are all caught up, `complete` stays True even when the
+    frame sampler has not finished — or has not started."""
+    upsert_talk(conn, _make_talk("vid-text-done-frames-pending"))
+    ids = _insert_chunks(conn, "vid-text-done-frames-pending", 3)
+    _insert_dense(conn, ids)
+    _insert_sparse(conn, ids)
+    _insert_tokens(conn, ids)
+    iss.upsert(conn, "vid-text-done-frames-pending", step="frame_sample", status="pending")
+
+    r = for_video(conn, "vid-text-done-frames-pending")
+    assert r.frame_sample_status == "pending"
+    assert r.frames_n == 0
+    assert r.complete is True

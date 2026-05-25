@@ -167,16 +167,17 @@ def sample(
 def default_video_path_for_talk(talk: Talk) -> Path:
     """Convention helper — `videos/<corpus>/<physical_id>.mp4` from a `Talk`.
 
-    `<corpus>` is the parent dir name of `talk.transcript_path` (matches
-    how transcripts are laid out). `<physical_id>` is `source_video_id`
-    when set (chapter slice) else `video_id`. The returned path may not
-    exist on disk — the caller raises if so.
+    `<corpus>` is the immediate parent dir name of `talk.transcript_path`
+    — works for both relative paths (e.g. `transcripts/ai_engineering_v0/
+    X.vtt`) AND absolute paths (e.g. `/abs/.../transcripts/
+    ai_engineering_v0/X.vtt`). `<physical_id>` is `source_video_id` when
+    set (chapter slice) else `video_id`. The returned path may not exist
+    on disk — the caller raises if so.
+
+    Falls back to `"_default"` only when the parent dir name is empty
+    (e.g. the transcript lives at the filesystem root) — that would be a
+    config bug worth surfacing rather than silently swallowing.
     """
-    transcript_p = Path(talk.transcript_path)
-    parts = transcript_p.parts
-    if len(parts) >= 3 and parts[0] == "transcripts":
-        corpus_dir = parts[1]
-    else:
-        corpus_dir = "_default"
+    corpus_dir = Path(talk.transcript_path).parent.name or "_default"
     physical_id = talk.source_video_id or talk.video_id
     return REPO_ROOT / "videos" / corpus_dir / f"{physical_id}.mp4"

@@ -36,10 +36,9 @@ from ingest.quality import probe
 from queues import pgmq_client
 
 # Tags that imply visual content worth frame-sampling. Anything outside this
-# set is text-only and skips the frames step.
-_VISUAL_TAGS = frozenset(
-    {"slides_heavy", "code_heavy", "whiteboard", "live_demo", "diagram"}
-)
+# set is text-only and skips the frames step. Public so cli_all can mirror
+# this decision when computing which .mp4s the frames-drain gate requires.
+VISUAL_TAGS = frozenset({"slides_heavy", "code_heavy", "whiteboard", "live_demo", "diagram"})
 
 
 @dataclass(frozen=True)
@@ -96,7 +95,7 @@ def fetch_reconcile(
     if not asr_skipped:
         pgmq_client.send(conn, "ingest_asr", {"video_id": talk.video_id, "step": "asr"})
 
-    needs_frames = bool(_VISUAL_TAGS.intersection(talk.format_tags))
+    needs_frames = bool(VISUAL_TAGS.intersection(talk.format_tags))
     frames_skipped = not needs_frames
     iss.upsert(
         conn,

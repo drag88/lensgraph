@@ -10,6 +10,12 @@ A video is "complete" when:
 Partial coverage (dense_n < chunks_n etc.) is the failure mode this
 module exists to surface — the prior boolean-only formulation reported
 "ready" when a channel was 1-row-non-empty.
+
+Visual readiness (frame_sample_status, frames_n) is reported alongside
+the text channels but is intentionally NOT part of `complete`. Text and
+visual ingest progress independently — gating text readiness on visual
+state would block a bakeoff just because the frame sampler has not yet
+caught up.
 """
 
 from __future__ import annotations
@@ -29,6 +35,9 @@ class VideoReadiness:
     dense_n: int
     sparse_n: int
     tokens_n: int
+    # Informational only — deliberately excluded from `complete`.
+    frame_sample_status: str | None
+    frames_n: int
 
     @property
     def complete(self) -> bool:
@@ -42,7 +51,7 @@ class VideoReadiness:
 
 
 def for_video(conn: psycopg.Connection, video_id: str) -> VideoReadiness:
-    """Single SQL query joining all four counts. Returns 0s if no rows."""
+    """Single SQL query joining all counts. Returns 0s / None if no rows."""
     row = conn.execute(
         """
         SELECT
@@ -56,7 +65,11 @@ def for_video(conn: psycopg.Connection, video_id: str) -> VideoReadiness:
              WHERE c.video_id = %(v)s) AS sparse_n,
           (SELECT count(DISTINCT cte.chunk_id) FROM chunk_token_embeds cte
              JOIN chunks c ON c.chunk_id = cte.chunk_id
-             WHERE c.video_id = %(v)s) AS tokens_n
+             WHERE c.video_id = %(v)s) AS tokens_n,
+          (SELECT status FROM ingest_step_status
+             WHERE video_id = %(v)s AND step = 'frame_sample' AND entity_id = 0
+          ) AS frame_sample_status,
+          (SELECT count(*) FROM frames WHERE video_id = %(v)s) AS frames_n
         """,
         {"v": video_id},
     ).fetchone()
@@ -67,6 +80,8 @@ def for_video(conn: psycopg.Connection, video_id: str) -> VideoReadiness:
         dense_n=int(row[2]),
         sparse_n=int(row[3]),
         tokens_n=int(row[4]),
+        frame_sample_status=row[5] if row[5] is None else str(row[5]),
+        frames_n=int(row[6]),
     )
 
 
