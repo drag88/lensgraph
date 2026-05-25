@@ -18,6 +18,7 @@ from db.migrate import apply
 pytestmark = pytest.mark.slow
 
 TEST_DB_NAME = "lensgraph_test_migrations"
+_MIG_TEST_CHUNKING_STRATEGY = "mig_test_filler"  # arbitrary; the test exercises the CHECK constraint, not the registry
 
 
 def _swap_db(dsn: str, new_db: str) -> str:
@@ -139,8 +140,9 @@ def test_chunks_end_sec_check_rejects_inverted_span(test_db):
             """
             INSERT INTO chunks(video_id, chunking_strategy, start_sec, end_sec,
                                text, token_count)
-            VALUES ('mig-test-vid', 'fixed_window', 10.0, 5.0, 'inverted', 1)
-            """
+            VALUES ('mig-test-vid', %s, 10.0, 5.0, 'inverted', 1)
+            """,
+            (_MIG_TEST_CHUNKING_STRATEGY,),
         )
 
 

@@ -46,3 +46,15 @@ def test_empty_encode_returns_empty_without_model_load():
     assert out.dense.shape == (0, DENSE_DIM)
     assert out.sparse == []
     assert out.multi == []
+
+
+def test_sparse_keys_are_int_and_in_vocab_range(embedder):
+    """Wrapper normalizes BGE's str/np.float lexical_weights to plain
+    dict[int, float]. Token ids must lie in [0, VOCAB_SIZE)."""
+    out = encode(["hello world this is a retrieval sentence"])
+    assert len(out.sparse) == 1
+    assert out.sparse[0], "expected non-empty lexical weights"
+    for token_id, weight in out.sparse[0].items():
+        assert isinstance(token_id, int)
+        assert isinstance(weight, float)
+        assert 0 <= token_id < VOCAB_SIZE
