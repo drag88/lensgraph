@@ -5,15 +5,17 @@ without requiring score normalisation across heterogeneous channels
 (BM25 ts_rank, cosine, inner-product, MaxSim). Each channel contributes
 1 / (k + rank) per chunk it ranks; missing-from-channel = 0 contribution.
 
-Returns ChannelResult instances with `score` set to the fused RRF score
-and `rank` set to the 1-indexed position in the fused output.
+Returns FusedResult instances with `score` set to the fused RRF score,
+`rank` set to the 1-indexed position in the fused output, and
+`channel_ranks` preserving the exact per-channel input ranks for the
+channels that contributed to the chunk's fusion.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from retrieve.types import ChannelResult
+from retrieve.types import ChannelResult, FusedResult
 
 RRF_K = 60
 
@@ -23,7 +25,7 @@ def fuse(
     *,
     k: int = RRF_K,
     top_k: int = 8,
-) -> list[ChannelResult]:
+) -> list[FusedResult]:
     """Fuse per-channel results via RRF. Returns top_k fused chunks.
 
     `channels`: {channel_name: per-channel ranked list}. Channel name is
@@ -56,17 +58,17 @@ def fuse(
             )
             entry["ranks_by_channel"][channel_name] = r.rank
 
-    scored: list[tuple[float, int, ChannelResult]] = []
+    scored: list[tuple[float, int, ChannelResult, dict[str, int]]] = []
     for chunk_id, entry in by_chunk.items():
         rrf_score = sum(
             1.0 / (k + rank) for rank in entry["ranks_by_channel"].values()
         )
-        scored.append((rrf_score, chunk_id, entry["meta"]))
+        scored.append((rrf_score, chunk_id, entry["meta"], entry["ranks_by_channel"]))
 
     scored.sort(key=lambda x: (-x[0], x[1]))
 
     return [
-        ChannelResult(
+        FusedResult(
             chunk_id=meta.chunk_id,
             video_id=meta.video_id,
             start_sec=meta.start_sec,
@@ -74,6 +76,7 @@ def fuse(
             text=meta.text,
             score=score,
             rank=i + 1,
+            channel_ranks=dict(ranks_by_channel),
         )
-        for i, (score, _chunk_id, meta) in enumerate(scored[:top_k])
+        for i, (score, _chunk_id, meta, ranks_by_channel) in enumerate(scored[:top_k])
     ]

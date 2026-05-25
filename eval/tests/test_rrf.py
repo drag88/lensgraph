@@ -155,3 +155,49 @@ def test_metadata_preserved_from_first_seen_channel():
 
 def test_rrf_k_default_constant():
     assert RRF_K == 60
+
+
+def test_channel_ranks_preserved_exactly():
+    """Each FusedResult.channel_ranks reflects the exact ranks the input
+    channels gave that chunk."""
+    channels = {
+        "bm25":   [_cr(1, 1), _cr(2, 2), _cr(3, 3)],
+        "dense":  [_cr(2, 1), _cr(1, 2)],
+        "sparse": [_cr(3, 1)],
+    }
+    fused = fuse(channels, k=60, top_k=10)
+    by_id = {f.chunk_id: f for f in fused}
+    assert by_id[1].channel_ranks == {"bm25": 1, "dense": 2}
+    assert by_id[2].channel_ranks == {"bm25": 2, "dense": 1}
+    assert by_id[3].channel_ranks == {"bm25": 3, "sparse": 1}
+
+
+def test_missing_channels_absent_from_channel_ranks_not_zero_or_null():
+    """A channel that did not rank a chunk must be ABSENT from
+    channel_ranks — not represented as 0, None, or sentinel.
+    Consumers iterate dict.keys() to identify contributing channels."""
+    channels = {
+        "bm25":   [_cr(1, 1)],
+        "dense":  [],                        # empty
+        "sparse": [_cr(2, 1)],
+    }
+    fused = fuse(channels, k=60, top_k=10)
+    by_id = {f.chunk_id: f for f in fused}
+    # Chunk 1: only in bm25.
+    assert by_id[1].channel_ranks == {"bm25": 1}
+    assert "dense" not in by_id[1].channel_ranks
+    assert "sparse" not in by_id[1].channel_ranks
+    # Chunk 2: only in sparse.
+    assert by_id[2].channel_ranks == {"sparse": 1}
+    assert "bm25" not in by_id[2].channel_ranks
+
+
+def test_channel_ranks_is_a_dict_str_int():
+    """Type sanity: keys are str, values are int. Defends against a
+    future refactor that accidentally swaps the dict shape."""
+    fused = fuse({"bm25": [_cr(1, 1)]}, k=60, top_k=10)
+    cr = fused[0].channel_ranks
+    assert isinstance(cr, dict)
+    for ch, rank in cr.items():
+        assert isinstance(ch, str)
+        assert isinstance(rank, int)
