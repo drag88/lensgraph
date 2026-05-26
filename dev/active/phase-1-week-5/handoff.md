@@ -107,7 +107,7 @@ In order. Stop if any is red.
 
 ```bash
 git log --oneline -5
-# Top should be: 645c37e chore: ruff format sweep across the tree
+# Confirm 645c37e appears in git log; trailing docs/test closeout commits may sit on top.
 
 make validate-evals-strict
 make phase0-gate
