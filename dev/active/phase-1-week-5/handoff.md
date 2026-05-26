@@ -3,8 +3,9 @@
 **Written:** 2026-05-25, end of week-4 retrieval session (last updated 2026-05-26 after slice-1 fix slice)
 **Read by:** the next session, before any implementation
 **Authoritative design:** `docs/phase-1-design.md` rev 4 (commit `e950583`)
-**Implementation head:** `645c37e` `chore: ruff format sweep across the tree`. A trailing `docs(handoff)` closeout commit may sit on top of that — don't pin a fresh session to an exact HEAD, just confirm `645c37e` is in `git log` and gates are green.
-**Slice 1 commits on top of session-start head:** `3c47a4c feat(ingest): frame-sampling worker — slice 1 of phase-1 week-5`, then `45575df fix(ingest,readiness): slice-1 review hardening` (absolute paths + required-videos guard + frame_sample readiness), then `645c37e chore: ruff format sweep across the tree`.
+**Implementation head:** `57c0c9e` `feat(retrieve): visual stage 2 + BGE reranker — slice 2B`. A trailing `docs(handoff)` closeout commit may sit on top of that — don't pin a fresh session to an exact HEAD, just confirm `57c0c9e` is in `git log` and gates are green.
+**Slice 1 commits:** `3c47a4c feat(ingest): frame-sampling worker`, `45575df fix(ingest,readiness): slice-1 review hardening`, `645c37e chore: ruff format sweep`.
+**Slice 2 commits:** `3fc5ab4 feat(embed,ingest): ColQwen patches + embed_frames pipeline — slice 2A`, `57c0c9e feat(retrieve): visual stage 2 + BGE reranker — slice 2B`.
 
 ---
 
@@ -21,30 +22,35 @@ Two pieces ship in the most recent slice:
 ### Gates green at HEAD
 
 ```
-make test                46 fast tests pass (41 at 70c5a19 + 5 frames_handler fast)
+make test                58 fast tests pass (46 at slice-1 close + 12 slice-2 fast)
 make lint                clean
 make phase0-gate         OK (11/3 verified gold across distinct talks)
 make validate-evals-strict  clean
 ```
 
-Per-suite counts (verified against the live container; ~12s slow total when warm):
+Per-suite counts (verified against the live container; slice-2 slow ~55s warm):
 ```
-test_db_migrations      12  (slow)
-test_talks_repo         19  (slow)
-test_pgmq_smoke         13  (slow)
-test_chunks_repo         5  (slow)
-test_embeds_repo         7  (slow)
-test_handlers_slow       8  (slow — 5 chunk/embed_text + 3 frames_handler)
-test_readiness          11  (slow — 6 original + 5 frame_sample exposure)
-test_cli_all_slow        6  (slow — 3 fetch/readiness + 3 required-videos guard)
-test_channels_smoke     20  (slow — 4 channels × 5 test shapes)
-test_bge_m3              6  (slow)
-test_visual_prefilter    4  (slow — CLOSED 2026-05-25, 4 passed in 38.08s)
-test_frames             15  (slow — 13 sampler/repo + 2 absolute-path regressions)
-test_handlers_fast       8  (fast — 3 chunk + 5 frames_handler)
-test_bge_m3_lazy         1  (fast)
-test_rrf                14  (fast)
-test_colqwen_lazy        5  (fast)
+test_db_migrations         12  (slow)
+test_talks_repo            19  (slow)
+test_pgmq_smoke            13  (slow)
+test_chunks_repo            5  (slow)
+test_embeds_repo            7  (slow)
+test_handlers_slow         11  (slow — 5 chunk/embed_text + 3 frames_handler + 3 embed_frames_handler)
+test_readiness             11  (slow — 6 original + 5 frame_sample exposure)
+test_cli_all_slow           7  (slow — 3 fetch/readiness + 4 required-videos guard branches)
+test_channels_smoke        20  (slow — 4 channels × 5 test shapes)
+test_bge_m3                 6  (slow)
+test_visual_prefilter       7  (slow — 4 stage-1 + 3 stage-2 channel retrieve)
+test_frames                23  (slow — 13 sampler/repo + 2 absolute-path + 8 patches/pooled lifecycle)
+test_colqwen_patches        3  (slow — 5 of the 8 in this file are fast)
+test_rerank_functional      6  (slow — top_k monotonic, preserve-set, empty, smaller-than-k, rrf_score / channel_ranks carry-through)
+test_rerank_smoke           1  (slow — catastrophic-regression against tengyu-rag-library-analogy dev_gold example)
+test_handlers_fast         11  (fast — 3 chunk + 5 frames_handler + 3 embed_frames_handler)
+test_bge_m3_lazy            1  (fast)
+test_rrf                   14  (fast)
+test_colqwen_lazy           5  (fast)
+test_colqwen_patches (fast)  5  (fast — patches/text-patches/pool resolver + lazy short-circuits)
+test_rerank_lazy            4  (fast — resolver + empty-candidates lazy short-circuit)
 ```
 
 ### Slice 0 / visual stage-1 verification gate — CLOSED
@@ -57,14 +63,21 @@ If a future colpali-engine release shifts the export path away from `colpali_eng
 
 ### Slice 1 / frame-sampling worker — CLOSED
 
-**Status: CLOSED 2026-05-26 (review fixes folded in).** `3c47a4c feat(ingest)` shipped the frame-sampling worker end-to-end: `ingest/frames.py::sample()` (ffmpeg subprocess, PNG + bitexact for stable sha256, frame_sec relative to the talk), `db/repos/frames.py` (idempotent on `(video_id, frame_sec)`, never touches `pooled_embedding`), `ingest/handlers.py::frames_handler` (persists frames + fans out `embed_frames` status rows + `ingest_embed_frames` messages), `ingest/cli_all.py` drain wiring.
+**Status: CLOSED 2026-05-26 (review fixes folded in).** `3c47a4c feat(ingest)` shipped the frame-sampling worker end-to-end. `45575df fix(ingest,readiness)` hardened the path resolver (handles absolute paths now), the cli_all required-videos guard (enumerates required .mp4s, three-branch decision), and exposed frame_sample status in readiness/bakeoff-prep without coupling text readiness to visual.
 
-`45575df fix(ingest,readiness)` then hardened three review gaps:
-  1. `default_video_path_for_talk()` now handles both relative and absolute `transcript_path` (the production `paths_from_talks_yaml()` resolves absolute; the prior `parts[0] == "transcripts"` check silently mis-routed to "_default" for absolute paths).
-  2. `cli_all` frames-drain guard now enumerates required `.mp4` paths from visual-tagged talks (deduped on chapter-slice parents) and branches: no visual talks → skip exit 0; zero staged → skip exit 0; partial staged → skip + force exit 1 + print missing; all staged → drain. The prior "any file under videos/&lt;corpus&gt;" gate let an unrelated file enable the drain → infinite-loop on missing `.mp4` redeliveries.
-  3. `VideoReadiness` gains `frame_sample_status: str | None` + `frames_n: int`; both informational and explicitly excluded from `complete`. `scripts/bakeoff_prep.py` gets a "frames" column rendering each state (—, skipped, pending, in_progress, ✓ (N), ✗ failed).
+### Slice 2 / visual stage 2 + reranker — CLOSED
 
-Visual stage 2 (per-patch ColQwen + MaxSim), reranker, and LangGraph loop remain deferred to slices 2 and 3.
+**Status: CLOSED 2026-05-26.** Two commits:
+
+- `3fc5ab4 feat(embed,ingest)` — ColQwen patches + embed_frames pipeline.
+  `embed/colqwen.py` exposes `encode_image_patches`, `encode_text_query_patches`, `pool_patches`; pooled encoders refactored to delegate (one encoder path). `db/repos/frames.py` adds `get`, `update_pooled`, `replace_patches`. `ingest/handlers.py::embed_frames_handler` is the terminal step: lookup → PIL load → encode → write `frame_patches` + `frames.pooled_embedding` from the SAME patch matrix. `ingest/cli_all.py` drains `ingest_embed_frames` after `ingest_frames` (same required-videos guard).
+
+- `57c0c9e feat(retrieve)` — visual stage 2 + reranker.
+  `retrieve/visual.py::retrieve()` (channel-level) does pooled HNSW prefilter → frame→chunk JOIN → MaxSim over concatenated per-chunk patches. `retrieve/rerank.py` is a NEW module wrapping `sentence_transformers.CrossEncoder` on `BAAI/bge-reranker-v2-m3` (resolved from `model_candidates.yaml::candidates.reranker.options[0]` — no hardcoded model strings). Raw logits sigmoid'd to 0-1 confidence.
+
+  **Reranker backend deviation worth flagging:** the design says "BGE-reranker-v2-m3 via FlagEmbedding". FlagEmbedding 1.4.0 calls `tokenizer.prepare_for_model`, which was removed in transformers 5.x (we're pinned at 5.9.0). Every `FlagReranker.compute_score` call crashes with `AttributeError: XLMRobertaTokenizer has no attribute prepare_for_model`. Switched to `sentence_transformers.CrossEncoder` — same model checkpoint, modern tokenizer API. If FlagEmbedding catches up to transformers 5.x, the switch back is one import + one constructor call. Not worth an ADR amendment because the model + scoring semantics are unchanged; only the loader differs.
+
+LangGraph loop + `make answer` exit gate (slice 3) remains deferred.
 
 ---
 
@@ -76,21 +89,20 @@ Visual stage 2 (per-patch ColQwen + MaxSim), reranker, and LangGraph loop remain
 |---|---|
 | `chunking/` | `fixed_window` strategy + registry; v0 only |
 | `embed/bge_m3.py` | 3-channel encode (dense/sparse/multi); config-driven model id |
-| `embed/colqwen.py` | `encode_image_pooled` + `encode_text_query` (stage 1); patches deferred |
-| `db/repos/{talks,chunks,embeds,ingest_step_status}.py` | full CRUD; 1-based sparsevec; idempotent |
+| `embed/colqwen.py` | full encode surface — pooled + patches + text-pooled + text-patches (one encoder path); config-driven model id |
 | `queues/{pgmq_client,workers}.py` | send / send_batch / process_one with full transactional contract |
-| `ingest/{fetch,quality,pipeline,handlers,cli,cli_all,frames,readiness}.py` | fetch + chunk + embed_text + frame_sample handlers; CORPUS-driven ingest-all with required-videos guard |
-| `db/repos/{talks,chunks,embeds,frames,ingest_step_status}.py` | full CRUD; 1-based sparsevec; idempotent (frames upsert preserves pooled_embedding under re-run) |
-| `retrieve/{bm25,dense,sparse,multivec,visual,rrf}.py` | 4 text channels + visual stage 1 + RRF fusion with channel_ranks |
+| `ingest/{fetch,quality,pipeline,handlers,cli,cli_all,frames,readiness}.py` | fetch + chunk + embed_text + frame_sample + embed_frames handlers; CORPUS-driven ingest-all with required-videos guard |
+| `db/repos/{talks,chunks,embeds,frames,ingest_step_status}.py` | full CRUD; 1-based sparsevec; idempotent (frames upsert preserves pooled_embedding; replace_patches DELETE+INSERT) |
+| `retrieve/{bm25,dense,sparse,multivec,visual,rrf,rerank}.py` | 5 channels (4 text + visual stage 1+2 chunk-level) + RRF + BGE-reranker (CrossEncoder backend) |
 | `scripts/bakeoff_prep.py` | per-chunk strict text readiness with N/M counts + visual `frames` column (status + count) |
 
 ### Deferred (per design §8 weeks 5+)
 
 | Step | Surface |
 |---|---|
-| 22-23 | ✅ **CLOSED slice 1** — `ingest/frames.py` ffmpeg sampler + `db/repos/frames.py` + `frames_handler` + cli_all drain + required-videos guard |
-| 24-25 | `embed/colqwen.py::encode_image_patches()` — per-patch embeddings + MaxSim stage 2 in `retrieve/visual.py` |
-| 26-27 | `retrieve/rerank.py` — BGE-reranker-v2-m3 on the RRF top-K |
+| 22-23 | ✅ **CLOSED slice 1** — `ingest/frames.py` + `db/repos/frames.py` + `frames_handler` + cli_all drain + required-videos guard |
+| 24-25 | ✅ **CLOSED slice 2A** — `embed/colqwen.py` full patches + text-patches + pool helper; `db/repos/frames.py` `update_pooled` + `replace_patches`; `embed_frames_handler` + drain wiring |
+| 26-27 | ✅ **CLOSED slice 2B** — `retrieve/visual.py` channel-level `retrieve()` (pooled prefilter → frame→chunk JOIN → MaxSim); `retrieve/rerank.py` (sentence-transformers CrossEncoder backend) |
 | 28-31 | `eval/runners/minimal_generation.py` + `generate/` LangGraph nodes (plan/retrieve/rerank/verify/generate/cite) + `generate/state.py` + `generate/trace.py` + `db/repos/traces.py` |
 | 32-33 | `generate/graph.py` + `generate/api.py` (`make answer`) |
 | 34 | **Week-5 EXIT GATE:** `make answer QUERY=...` returns a cited answer + trace_id |
@@ -107,16 +119,16 @@ In order. Stop if any is red.
 
 ```bash
 git log --oneline -5
-# Confirm 645c37e appears in git log; trailing docs/test closeout commits may sit on top.
+# Confirm 57c0c9e appears in git log; trailing docs/test closeout commits may sit on top.
 
 make validate-evals-strict
 make phase0-gate
 make test
 make lint
-# All four must pass (46 fast tests).
+# All four must pass (58 fast tests).
 ```
 
-Slice 0 (visual stage 1) and Slice 1 (frame-sampling worker) are both CLOSED. Begin Slice 2 once the gates are green — no prerequisite slow-suite re-run needed unless you've changed code under `embed/`, `db/migrations/`, or `ingest/frames.py`.
+Slices 0, 1, and 2 are all CLOSED. Slice 3 (LangGraph generation loop + `make answer` exit gate) is next. No prerequisite slow-suite re-run needed unless you've changed code under `embed/`, `db/migrations/`, `ingest/frames.py`, `retrieve/visual.py`, or `retrieve/rerank.py`.
 
 ---
 
@@ -143,14 +155,11 @@ Three slices, sized for ~one session each. Take them in order; each verifies bef
 
 Shipped across `3c47a4c feat(ingest)` + `45575df fix(ingest,readiness)` + `645c37e chore`. Frames substrate is end-to-end: ffmpeg sampler, idempotent repo, fan-out handler, cli_all drain with strict required-videos guard. Visual readiness is now visible in bakeoff-prep without coupling to text readiness.
 
-### Slice 2 — Visual stage 2 + reranker (design §8 steps 24-27) — NEXT
+### Slice 2 — Visual stage 2 + reranker (design §8 steps 24-27) — ✅ CLOSED 2026-05-26
 
-- `embed/colqwen.py::encode_image_patches()` — per-patch embeddings (deferred from this session)
-- `retrieve/visual.py` extended with stage 2 MaxSim over the prefiltered frame set
-- `retrieve/rerank.py` — BGE-reranker-v2-m3 on the RRF top-K (CPU local per design)
-- Functional smoke tests for both (no quality assertions; that's the phase-2 bakeoff's job)
+Shipped across `3fc5ab4 feat(embed,ingest)` + `57c0c9e feat(retrieve)`. ColQwen exposes full patches (image + text); embed_frames worker populates `frame_patches` + `frames.pooled_embedding` from the same matrix; `retrieve/visual.py::retrieve()` is the channel-level entry doing pooled prefilter → frame→chunk JOIN → MaxSim; `retrieve/rerank.py` wraps `sentence_transformers.CrossEncoder` (FlagEmbedding 1.4.0 broken under transformers 5.x — documented in commit body). Model IDs config-driven from `model_candidates.yaml`.
 
-### Slice 3 — LangGraph generation loop (design §8 steps 28-34)
+### Slice 3 — LangGraph generation loop (design §8 steps 28-34) — NEXT
 
 This is the big one — the week-5 EXIT GATE. Three sub-pieces:
 - `eval/runners/minimal_generation.py` + `eval/runners/providers.py` + `generate/parser.py` (shared with the LangGraph generate node)

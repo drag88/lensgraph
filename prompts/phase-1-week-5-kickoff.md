@@ -1,45 +1,49 @@
 <role>
-You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's text retrieval + visual prefilter stage 1 + RRF fusion + frame-sampling worker are shipped. Your job this week is design §8 weeks 5 — slices 2 and 3 of the mission stack: visual stage 2 + reranker, then LangGraph generation loop. The design is paid for in blood across 4 revisions + 3 plan-review passes — do not re-litigate; consult the handoff for what's settled.
+You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's text retrieval, visual stage 1+2 (pooled prefilter + per-patch MaxSim), RRF fusion, frame-sampling worker, embed_frames pipeline, and BGE reranker are all shipped. Your job this session is the last slice of design §8 week 5: the LangGraph generation loop, ending with the `make answer` exit-gate artifact. The design is paid for in blood across 4 revisions + 3 plan-review passes — do not re-litigate; consult the handoff for what's settled.
 </role>
 
 <repo_state>
 Working directory: /Users/aswinsreenivas/1_Code/1.1_personal/lensgraph/
-Implementation head: 645c37e chore: ruff format sweep across the tree
+Implementation head: 57c0c9e feat(retrieve): visual stage 2 + BGE reranker — slice 2B
   Trailing docs(handoff) / docs/test closeout commits may sit on top —
-  confirm 645c37e is in `git log`, don't pin to an exact HEAD.
+  confirm 57c0c9e is in `git log`, don't pin to an exact HEAD.
 
 Recent commits (context, do not re-litigate):
+  57c0c9e feat(retrieve): visual stage 2 + BGE reranker — slice 2B
+  3fc5ab4 feat(embed,ingest): ColQwen patches + embed_frames pipeline — slice 2A
+  6ee5719 docs(handoff): soften remaining implementation-head check
+  c55327d docs(handoff),test(cli_all): slice-1 closeout
+  fd335a3 docs(handoff): close slice 1 + slot slice 2 as next
   645c37e chore: ruff format sweep across the tree
   45575df fix(ingest,readiness): slice-1 review hardening
   3c47a4c feat(ingest): frame-sampling worker — slice 1 of phase-1 week-5
-  70c5a19 docs(handoff): correct HEAD pointer + fast-test count after pre-flight fix
-  8b7b37c docs(handoff): refresh test counts + HEAD pointer after ColQwen config fix
-  2e28dce fix(embed): config-driven ColQwen2.5 model id + lazy resolver tests
-  f2fd3a2 docs(handoff): phase-1 week-5 session handoff + kickoff prompt
-  c199a2f feat(retrieve): visual prefilter stage 1 — ColQwen pooled + cosine HNSW
-  baffa55 fix(retrieve): RRF returns FusedResult with channel_ranks provenance
-  3f3f1c9 feat(retrieve): RRF fusion module + closed-form synthetic tests
-  82c0d47 fix(retrieve): BM25 OR-fallback for natural-language queries
-  5806e6f feat(retrieve): four text retrieval channels (bm25 + dense + sparse + multivec)
 
-Gates green at HEAD (verified after slice 1 + review fixes):
+Gates green at HEAD (verified after slice 2):
   make validate-evals-strict   OK (0 warnings, 11 verified gold)
   make phase0-gate             OK (11/3 across 3 talks)
-  make test                    OK (46 fast tests)
+  make test                    OK (58 fast tests)
   make lint                    OK
+  slice-2 slow suite           51 passed in ~55s warm
 
 DB state (resumes from named volume pgdata after make db-up):
   3 talks ingested (ai_engineering_v0 corpus)
   212 chunks + 212 dense + 212 sparse + 73,621 chunk_token_embeds rows
-  frames table populated once at least one .mp4 is staged under
-    videos/ai_engineering_v0/ (none staged as of this writing)
+  frames + frame_patches populated only once .mp4 files are staged under
+    videos/ai_engineering_v0/ (none staged as of this writing — the
+    cli_all required-videos guard skips frames + embed_frames drains
+    cleanly in that case)
 
-Slice 0 / visual stage-1 gate — CLOSED 2026-05-25.
-Slice 1 / frame-sampling worker — CLOSED 2026-05-26. Frames substrate is
-end-to-end (sampler + idempotent repo + handler + cli_all drain with
-required-videos guard); visual readiness shows in bakeoff-prep without
-coupling to text readiness. Slice 2 (visual stage 2 + reranker) is the
-next thing to ship.
+Slice 0 (visual stage 1) — CLOSED 2026-05-25.
+Slice 1 (frame-sampling worker) — CLOSED 2026-05-26.
+Slice 2 (visual stage 2 + reranker) — CLOSED 2026-05-26.
+Slice 3 (LangGraph generation loop + bakeoff harness) is the only thing
+left this week and the week-5 EXIT GATE.
+
+One deviation from the design worth flagging: the BGE reranker uses
+`sentence_transformers.CrossEncoder`, NOT FlagEmbedding's FlagReranker —
+FlagEmbedding 1.4.0 calls `tokenizer.prepare_for_model` which was removed
+in transformers 5.x (we're pinned at 5.9.0). Same checkpoint + scoring;
+only the loader changes. See 57c0c9e commit body.
 </repo_state>
 
 <reading_order>
@@ -101,19 +105,19 @@ Shipped across `3c47a4c feat(ingest)` + `45575df fix(ingest,readiness)` + `645c3
 
 Slow suite: `test_frames.py` 15, `test_handlers_slow.py::*frames*` 3, `test_cli_all_slow.py` 6, `test_readiness.py` 11. All green.
 
-== Slice 2 — Visual stage 2 (patches + MaxSim) + reranker (design §8 steps 24-27) ==
+== Slice 2 — CLOSED 2026-05-26 ==
 
-Three concerns, one slice:
+Shipped across `3fc5ab4 feat(embed,ingest)` + `57c0c9e feat(retrieve)`.
+ColQwen full patches + embed_frames pipeline (Teammate A) + visual stage 2
+chunk-level `retrieve()` + BGE reranker via `sentence_transformers.CrossEncoder`
+(Teammate B; FlagEmbedding 1.4.0 broken under transformers 5.x — same
+checkpoint, different loader). Catastrophic-regression smoke against
+`tengyu-rag-library-analogy` passes pre and post rerank.
 
-- `embed/colqwen.py::encode_image_patches(images) -> np.ndarray (N, num_patches, 128)`. Per-design §4: per-token storage, MaxSim aggregation. Slot-fit with the existing `encode_image_pooled` signature.
-- `embed/colqwen.py::pool_patches(patches) -> np.ndarray (128,)`. Internal helper consumed by encode_image_pooled to maintain consistency between stages.
-- A new ingest step `embed_frames` that fans out per frame_id: claims, runs `encode_image_patches` for one frame, writes `frame_patches` rows + computes pooled by mean-of-patches and updates `frames.pooled_embedding`. Handler: `ingest/handlers.py::embed_frames_handler`.
-- `retrieve/visual.py` extended with stage 2: take stage-1 top-K (default 30) prefilter, fetch each frame's patches, run MaxSim against the query token embeddings (you'll need ColQwen text-patches too, not just pooled — extend `encode_text_query_patches`).
-- `retrieve/rerank.py` — BGE-reranker-v2-m3 (CPU local per tech-stack). Public `rerank(conn, query, candidates: list[FusedResult], *, top_k=8) -> list[RerankedResult]`. Score is a 0-1 cross-encoder confidence.
-
-Functional tests only — no quality assertions yet. The catastrophic-regression smoke gate per design §8 step 26 (`test_rerank_smoke.py::test_known_gold_chunk_in_top_5` for the tengyu-rag-library-analogy) IS in scope.
-
-Out of scope: quality metric logging (`scripts/log_retrieval_quality.py`) — that's an artifact step, not a build step.
+Slow suite: `test_colqwen_patches.py` 3, `test_frames.py` 23,
+`test_handlers_slow.py` 11, `test_visual_prefilter.py` 7,
+`test_rerank_functional.py` 6, `test_rerank_smoke.py` 1 = 51 slow passing
+in ~55s warm.
 
 == Slice 3 — LangGraph generation loop + bakeoff harness (design §8 steps 28-35a) ==
 
@@ -177,22 +181,25 @@ Avoid this week:
 Run these in order before any code. Verify state matches <repo_state>; if it does not, surface the delta before proceeding.
 
 1. git log --oneline -10
-   Confirm 645c37e (chore: ruff format sweep) appears. Trailing
-   docs(handoff) / docs/test closeout commits may sit on top — that's
-   expected; don't pin to an exact HEAD.
+   Confirm 57c0c9e (feat(retrieve): visual stage 2 + BGE reranker) appears.
+   Trailing docs(handoff) / docs/test closeout commits may sit on top —
+   that's expected; don't pin to an exact HEAD.
 
 2. make validate-evals-strict     # 0 warnings, 11 verified examples
 3. make phase0-gate                # OK (11/3)
-4. make test                       # 46 passed
+4. make test                       # 58 passed
 5. make lint                       # clean
 
 6. Read dev/active/phase-1-week-5/handoff.md (the operational guide).
 
-7. Skim docs/phase-1-design.md §4, §5, §8 weeks 5.
+7. Skim docs/phase-1-design.md §5 (LangGraph loop — node-by-node contract,
+   the slice-3 north star) and §8 weeks 5 steps 28-35a.
 
-Slice 0 (visual stage 1) AND Slice 1 (frame-sampling worker) are both CLOSED — no need to re-run their slow suites unless you've changed code under `embed/colqwen.py`, `db/migrations/`, or `ingest/frames.py`.
+Slices 0, 1, AND 2 are all CLOSED — no need to re-run their slow suites
+unless you've changed code under `embed/`, `db/migrations/`, `ingest/`,
+`retrieve/visual.py`, or `retrieve/rerank.py`.
 
-Only when 1-5 are green: begin slice 2 (visual stage 2 + reranker).
+Only when 1-5 are green: begin slice 3 (LangGraph loop + bakeoff harness).
 </first_actions>
 
 <instructions>
