@@ -50,3 +50,30 @@ class FusedResult:
     score: float  # fused RRF score
     rank: int  # 1-indexed position in fused list
     channel_ranks: dict[str, int]  # channel_name -> rank in that channel
+
+
+@dataclass(frozen=True)
+class RerankedResult:
+    """Output of retrieve.rerank.rerank(). Carries the cross-encoder score
+    in `rerank_score` and preserves the pre-rerank RRF score in `rrf_score`
+    so the trace can show how the reranker re-ordered (or didn't re-order)
+    the fused list.
+
+    `score` is set to `rerank_score` for parallelism with the other result
+    types (callers that only want "the ranking score" stay polymorphic);
+    `rank` is the 1-indexed position in the reranked output.
+
+    `channel_ranks` is forwarded as-is from the input FusedResult — the
+    reranker does not invent channel attribution; it only reorders.
+    """
+
+    chunk_id: int
+    video_id: str
+    start_sec: float
+    end_sec: float
+    text: str
+    score: float  # == rerank_score; mirrored for callers that handle multiple result shapes
+    rank: int  # 1-indexed position in reranked list
+    channel_ranks: dict[str, int]
+    rerank_score: float  # cross-encoder sigmoid in [0, 1]
+    rrf_score: float  # pre-rerank fused score, preserved for trace
