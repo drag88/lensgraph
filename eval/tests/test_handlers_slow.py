@@ -70,11 +70,11 @@ def test_db():
 @pytest.fixture
 def conn(test_db):
     """Per-test connection with a clean slate. CASCADE drops dense / sparse /
-    token rows along with chunks."""
+    token / frame_patches rows along with chunks / frames."""
     with psycopg.connect(test_db, autocommit=True) as c:
         c.execute(
             "TRUNCATE chunk_token_embeds, sparse_embeds, dense_embeds, "
-            "chunks, ingest_step_status, talks CASCADE"
+            "frame_patches, frames, chunks, ingest_step_status, talks CASCADE"
         )
         for q in pgmq_client.QUEUES:
             pgmq_client.purge(c, q)
@@ -530,3 +530,175 @@ def test_frames_handler_crash_rolls_back_frames_status_and_message(
     msgs = pgmq_client.read(conn, "ingest_frames", vt=30, qty=1)
     assert len(msgs) == 1
     assert msgs[0].message["video_id"] == "crash-fr"
+
+
+# -- embed_frames_handler -------------------------------------------------
+
+
+def _seed_frame(
+    conn: psycopg.Connection,
+    *,
+    video_id: str,
+    image_path: Path,
+    frame_sec: float = 0.0,
+) -> int:
+    """Insert a talks + frames row with frame_sec=0; return frame_id.
+    Bypasses the frames_handler's ffmpeg path so embed_frames tests don't
+    re-sample the synth video."""
+    from db.repos import frames as frames_repo
+
+    upsert_talk(conn, _make_frames_talk(video_id, duration_sec=60))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            # Inline import keeps the slow test honest about its only
+            # frames-table dependency.
+            __import__("ingest.frames", fromlist=["FrameSample"]).FrameSample(
+                video_id=video_id,
+                frame_sec=frame_sec,
+                image_path=str(image_path),
+                sha256="a" * 64,
+            )
+        ],
+    )
+    return fid
+
+
+def _make_real_png(tmp_path: Path, color: tuple[int, int, int] = (200, 100, 50)) -> Path:
+    """Write a real PNG to disk so PIL.Image.open inside embed_frames_handler
+    can decode it. ColQwen's processor expects a usable RGB image."""
+    from PIL import Image
+
+    p = tmp_path / "real.png"
+    Image.new("RGB", (224, 224), color).save(p, format="PNG")
+    return p
+
+
+def test_embed_frames_handler_end_to_end_writes_pooled_and_patches(
+    conn, tmp_path
+):
+    """Seed a frame row, enqueue ingest_embed_frames, run process_one with
+    embed_frames_handler. ColQwen loads once per module (cached weights);
+    assertions:
+      - frames.pooled_embedding populated (NOT NULL).
+      - frame_patches table has P > 0 rows for this frame with
+        patch_index = 0..P-1.
+      - The pooled vector equals the mean of the patches (one-encoder-path).
+    """
+    import numpy as np
+    from pgvector.psycopg import register_vector
+
+    img_path = _make_real_png(tmp_path)
+    fid = _seed_frame(conn, video_id="embed-fr", image_path=img_path)
+    iss.upsert(conn, "embed-fr", step="embed_frames", entity_id=fid, status="pending")
+    pgmq_client.send(
+        conn,
+        "ingest_embed_frames",
+        {"video_id": "embed-fr", "step": "embed_frames", "entity_id": fid},
+    )
+
+    with conn.transaction():
+        processed = workers.process_one(
+            conn, "ingest_embed_frames", handlers.embed_frames_handler
+        )
+    assert processed is True
+
+    register_vector(conn)
+    pooled = conn.execute(
+        "SELECT pooled_embedding FROM frames WHERE frame_id = %s", (fid,)
+    ).fetchone()[0]
+    assert pooled is not None
+    assert pooled.shape == (128,)
+
+    patch_rows = conn.execute(
+        "SELECT patch_index, embedding FROM frame_patches "
+        "WHERE frame_id = %s ORDER BY patch_index",
+        (fid,),
+    ).fetchall()
+    assert len(patch_rows) > 0
+    indices = [r[0] for r in patch_rows]
+    assert indices == list(range(len(patch_rows)))
+
+    # Pooled equals the mean of the patches — the HNSW prefilter vector
+    # is provably a summary of the MaxSim refine vectors for this frame.
+    patch_mat = np.stack([np.asarray(r[1], dtype=np.float32) for r in patch_rows])
+    np.testing.assert_allclose(pooled, patch_mat.mean(axis=0), rtol=1e-4, atol=1e-4)
+
+
+def test_embed_frames_handler_retry_does_not_duplicate_patches(conn, tmp_path):
+    """replace_patches is full-replace: a second handler run for the same
+    frame leaves the same row count, not double. update_pooled is a plain
+    UPDATE — idempotent by construction."""
+    img_path = _make_real_png(tmp_path, color=(50, 100, 200))
+    fid = _seed_frame(conn, video_id="retry-em", image_path=img_path)
+
+    with conn.transaction():
+        handlers.embed_frames_handler(
+            conn,
+            {"video_id": "retry-em", "step": "embed_frames", "entity_id": fid},
+        )
+    first_n = conn.execute(
+        "SELECT count(*) FROM frame_patches WHERE frame_id = %s", (fid,)
+    ).fetchone()[0]
+    assert first_n > 0
+
+    with conn.transaction():
+        handlers.embed_frames_handler(
+            conn,
+            {"video_id": "retry-em", "step": "embed_frames", "entity_id": fid},
+        )
+    second_n = conn.execute(
+        "SELECT count(*) FROM frame_patches WHERE frame_id = %s", (fid,)
+    ).fetchone()[0]
+    assert second_n == first_n
+
+
+def test_embed_frames_handler_crash_rolls_back_patches_pooled_and_message(
+    conn, tmp_path, monkeypatch
+):
+    """If replace_patches raises, process_one's caller transaction rolls
+    back: no frame_patches rows, pooled_embedding still NULL, status
+    reverted to pending/0 attempts, message redelivers."""
+    img_path = _make_real_png(tmp_path, color=(10, 20, 30))
+    fid = _seed_frame(conn, video_id="crash-em", image_path=img_path)
+    iss.upsert(conn, "crash-em", step="embed_frames", entity_id=fid, status="pending")
+    pgmq_client.send(
+        conn,
+        "ingest_embed_frames",
+        {"video_id": "crash-em", "step": "embed_frames", "entity_id": fid},
+    )
+
+    def boom(c, frame_id, patches):
+        raise RuntimeError("simulated patches replace failure")
+
+    monkeypatch.setattr(handlers.frames_repo, "replace_patches", boom)
+
+    with pytest.raises(RuntimeError, match="simulated patches replace failure"):
+        with conn.transaction():
+            workers.process_one(
+                conn, "ingest_embed_frames", handlers.embed_frames_handler
+            )
+
+    n_patches = conn.execute(
+        "SELECT count(*) FROM frame_patches WHERE frame_id = %s", (fid,)
+    ).fetchone()[0]
+    assert n_patches == 0
+
+    nulls = conn.execute(
+        "SELECT count(*) FROM frames "
+        "WHERE frame_id = %s AND pooled_embedding IS NULL",
+        (fid,),
+    ).fetchone()[0]
+    assert nulls == 1
+
+    status_row = conn.execute(
+        "SELECT status, attempts FROM ingest_step_status "
+        "WHERE video_id = 'crash-em' AND step = 'embed_frames' AND entity_id = %s",
+        (fid,),
+    ).fetchone()
+    assert status_row == ("pending", 0)
+
+    msgs = pgmq_client.read(conn, "ingest_embed_frames", vt=30, qty=1)
+    assert len(msgs) == 1
+    assert msgs[0].message["video_id"] == "crash-em"
+    assert msgs[0].message["entity_id"] == fid

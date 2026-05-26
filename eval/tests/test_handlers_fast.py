@@ -368,3 +368,137 @@ def test_frames_handler_empty_samples_short_circuits(monkeypatch):
         conn=None,
         payload={"video_id": "vid-fr", "step": "frame_sample", "entity_id": 0},
     )
+
+
+# -- embed_frames_handler -------------------------------------------------
+
+
+class _FakeImage:
+    """Minimal PIL.Image stand-in for the with-block lifecycle. Only
+    ``load`` and the context-manager protocol are exercised."""
+
+    def load(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _stub_patches_3d(p: int = 4, dim: int = 128):
+    """Return a deterministic (1, p, dim) array — emulates
+    encode_image_patches([img]) without loading ColQwen."""
+    return np.stack(
+        [
+            np.stack(
+                [np.full((dim,), 0.1 + i * 0.01, dtype=np.float32) for i in range(p)]
+            )
+        ]
+    )
+
+
+def test_embed_frames_handler_loads_image_encodes_and_writes_pooled_and_patches(
+    monkeypatch, tmp_path
+):
+    """Happy path: get frame row → open image → encode patches → write
+    pooled + patches. Pooled vector must be derivable from the patches
+    via pool_patches so HNSW and MaxSim see the same content."""
+    img_path = tmp_path / "f.png"
+    img_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+    monkeypatch.setattr(
+        h.frames_repo,
+        "get",
+        lambda conn, frame_id, video_id: (str(img_path), 10.0),
+    )
+
+    # Capture-only fake for PIL.Image.open — the handler's `with` block
+    # exercises __enter__/__exit__/load. We don't want to actually decode.
+    from PIL import Image
+
+    opened: dict = {}
+
+    def fake_open(path):
+        opened["path"] = path
+        return _FakeImage()
+
+    monkeypatch.setattr(Image, "open", fake_open)
+
+    patches_3d = _stub_patches_3d(p=4)
+    encode_calls: list = []
+
+    def fake_encode_image_patches(images):
+        encode_calls.append(images)
+        return patches_3d
+
+    pool_calls: list = []
+
+    def fake_pool_patches(arr):
+        pool_calls.append(arr)
+        return arr.mean(axis=0).astype(np.float32)
+
+    monkeypatch.setattr(h.colqwen, "encode_image_patches", fake_encode_image_patches)
+    monkeypatch.setattr(h.colqwen, "pool_patches", fake_pool_patches)
+
+    update_calls: list = []
+    replace_calls: list = []
+    monkeypatch.setattr(
+        h.frames_repo,
+        "update_pooled",
+        lambda c, fid, vec: update_calls.append((fid, vec)),
+    )
+    monkeypatch.setattr(
+        h.frames_repo,
+        "replace_patches",
+        lambda c, fid, patches: replace_calls.append((fid, patches)),
+    )
+
+    h.embed_frames_handler(
+        conn=None,
+        payload={"video_id": "vid-e", "step": "embed_frames", "entity_id": 77},
+    )
+
+    assert opened["path"] == img_path
+    assert len(encode_calls) == 1 and len(encode_calls[0]) == 1  # one image
+    assert len(pool_calls) == 1
+    np.testing.assert_allclose(pool_calls[0], patches_3d[0])
+
+    assert len(update_calls) == 1
+    assert update_calls[0][0] == 77
+    assert update_calls[0][1].shape == (128,)
+    assert update_calls[0][1].dtype == np.float32
+
+    assert len(replace_calls) == 1
+    assert replace_calls[0][0] == 77
+    np.testing.assert_allclose(replace_calls[0][1], patches_3d[0])
+
+
+def test_embed_frames_handler_raises_on_missing_frame_row(monkeypatch):
+    """Contract: a missing frame row is a hard failure (cross-video lookup
+    mismatch, or row deleted out from under the worker). process_one rolls
+    back and the message redelivers."""
+    monkeypatch.setattr(h.frames_repo, "get", lambda c, frame_id, video_id: None)
+
+    with pytest.raises(ValueError, match="no frames row"):
+        h.embed_frames_handler(
+            conn=None,
+            payload={"video_id": "missing-vid", "step": "embed_frames", "entity_id": 999},
+        )
+
+
+def test_embed_frames_handler_raises_on_missing_image_file(monkeypatch, tmp_path):
+    """Missing image file on disk is a hard failure — operator must
+    re-stage the source video (frames sampling regenerates the PNGs)."""
+    monkeypatch.setattr(
+        h.frames_repo,
+        "get",
+        lambda c, frame_id, video_id: (str(tmp_path / "nope.png"), 0.0),
+    )
+
+    with pytest.raises(FileNotFoundError, match="frame image not found"):
+        h.embed_frames_handler(
+            conn=None,
+            payload={"video_id": "vid-e", "step": "embed_frames", "entity_id": 1},
+        )

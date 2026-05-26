@@ -15,7 +15,11 @@ After all talks processed:
      Requires pre-staged .mp4 files under ``videos/<corpus>/<id>.mp4`` —
      handler raises FileNotFoundError per video otherwise (the message
      rolls back to the queue and the rest of the corpus continues).
-     embed_frames messages enqueued here drain in slice 2.
+  5. Drain ingest_embed_frames queue via process_one(embed_frames_handler)
+     until empty. Loads ColQwen2.5 lazily (~30s cold model load on MPS
+     after weights cache hit, slower first-ever pull). Skipped together
+     with step 4 when required videos are missing — there are no frame
+     rows to embed if no videos were sampled.
 
 One-shot driver — runs to completion and exits. The long-running multi-queue
 worker arrives in a later slice.
@@ -37,7 +41,12 @@ from db.conn import dsn as resolve_dsn
 from db.repos.talks import Talk
 from ingest import readiness
 from ingest.fetch import LocalFsFetcher, paths_from_talks_yaml
-from ingest.handlers import chunk_handler, embed_text_handler, frames_handler
+from ingest.handlers import (
+    chunk_handler,
+    embed_frames_handler,
+    embed_text_handler,
+    frames_handler,
+)
 from ingest.pipeline import VISUAL_TAGS, fetch_reconcile
 from queues import pgmq_client, workers
 
@@ -175,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         required_videos = _required_video_paths(talks, args.corpus)
         missing_videos = [p for p in required_videos if not p.exists()]
         frames_drained = 0
+        embed_frames_drained = 0
         videos_incomplete = False
 
         if not required_videos:
@@ -203,10 +213,21 @@ def main(argv: list[str] | None = None) -> int:
             frames_drained = _drain(conn, "ingest_frames", frames_handler)
             print(f"drained {frames_drained} from ingest_frames")
 
+            # embed_frames drains right after frames so the ColQwen model
+            # only loads when we know there's work for it. If the frames
+            # drain was skipped (no/missing videos), the embed_frames queue
+            # is empty by construction — skip it too rather than spinning
+            # up the heavy model for zero messages.
+            embed_frames_drained = _drain(
+                conn, "ingest_embed_frames", embed_frames_handler
+            )
+            print(f"drained {embed_frames_drained} from ingest_embed_frames")
+
         print(
             f"summary: corpus={args.corpus} videos={len(talks)} "
             f"chunk_msgs={chunk_drained} embed_msgs={embed_drained} "
-            f"frames_msgs={frames_drained}"
+            f"frames_msgs={frames_drained} "
+            f"embed_frames_msgs={embed_frames_drained}"
         )
         for vid, status in per_video_fetch.items():
             print(f"  {vid}: {status}")

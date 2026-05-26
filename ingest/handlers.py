@@ -15,9 +15,11 @@ BEFORE the message is enqueued so the embed_text handler's
 claim_for_update always finds its row (otherwise IngestStepNotFoundError).
 
 The frames handler mirrors that shape: one status row + one
-ingest_embed_frames message per persisted frame_id. Pooled / per-patch
-embeddings are written by the (still-deferred) embed_frames_handler in
-slice 2 — frames_handler only sets the substrate up.
+ingest_embed_frames message per persisted frame_id. The embed_frames
+handler is the terminal step in the frames pipeline — it writes
+``frames.pooled_embedding`` + ``frame_patches`` rows for one frame_id
+and does NOT fan out (no downstream step depends on its output beyond
+the retrieve-time visual channel).
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from db.repos import embeds as embeds_repo
 from db.repos import frames as frames_repo
 from db.repos import ingest_step_status as iss
 from db.repos import talks as talks_repo
-from embed import bge_m3
+from embed import bge_m3, colqwen
 from ingest import frames as frames_mod
 from queues import pgmq_client
 
@@ -142,3 +144,52 @@ def frames_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> None:
         "ingest_embed_frames",
         [{"video_id": video_id, "step": "embed_frames", "entity_id": fid} for fid in frame_ids],
     )
+
+
+def embed_frames_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> None:
+    """ingest_embed_frames: encode one frame's patches via ColQwen2.5, write
+    frame_patches rows + update frames.pooled_embedding.
+
+    Payload: {video_id, step: "embed_frames", entity_id: frame_id}.
+
+    Terminal step — no fanout. The retrieve-time visual channel reads
+    frame_patches (MaxSim) and frames.pooled_embedding (HNSW prefilter)
+    directly; nothing downstream in the ingest pipeline consumes this
+    handler's output.
+
+    Pooled and patches are derived from the SAME encode call via
+    ``colqwen.pool_patches``, guaranteeing the HNSW prefilter vector
+    matches the MaxSim refine vectors for the same frame.
+    """
+    from PIL import Image
+
+    video_id = payload["video_id"]
+    frame_id = int(payload["entity_id"])
+
+    row = frames_repo.get(conn, frame_id=frame_id, video_id=video_id)
+    if row is None:
+        raise ValueError(f"no frames row for frame_id={frame_id}, video_id={video_id!r}")
+    image_path, _ = row
+
+    on_disk = Path(image_path)
+    if not on_disk.exists():
+        raise FileNotFoundError(
+            f"frame image not found at {on_disk} for frame_id={frame_id}, "
+            f"video_id={video_id!r}; operator must re-stage the source video"
+        )
+
+    with Image.open(on_disk) as img:
+        # encode_image_patches needs a materialized image since the file
+        # handle inside the `with` block closes on exit.
+        img.load()
+        batch = colqwen.encode_image_patches([img])
+
+    if batch.shape[0] != 1:
+        raise RuntimeError(
+            f"encode_image_patches returned batch size {batch.shape[0]} for single image"
+        )
+    patches = batch[0]  # (P, POOLED_DIM)
+    pooled = colqwen.pool_patches(patches)
+
+    frames_repo.update_pooled(conn, frame_id, pooled)
+    frames_repo.replace_patches(conn, frame_id, patches)

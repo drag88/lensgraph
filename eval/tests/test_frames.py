@@ -24,6 +24,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import psycopg
 import pytest
 
@@ -405,3 +406,210 @@ def test_upsert_refreshes_image_path_and_sha_but_preserves_pooled_embedding(
 
 def test_upsert_empty_short_circuits(conn):
     assert frames_repo.upsert(conn, []) == []
+
+
+# -- frames_repo.get scoping --------------------------------------------------
+
+
+def test_get_returns_image_path_and_frame_sec_for_matching_video(conn):
+    upsert_talk(conn, _make_talk("get-vid"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="get-vid",
+                frame_sec=20.0,
+                image_path="/tmp/get-vid/frame_000020.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    row = frames_repo.get(conn, frame_id=fid, video_id="get-vid")
+    assert row == ("/tmp/get-vid/frame_000020.png", 20.0)
+
+
+def test_get_returns_none_when_video_id_mismatches(conn):
+    """Cross-video scoping check — the embed handler must never silently
+    read a frame from a different talk just because the integer id exists."""
+    upsert_talk(conn, _make_talk("scope-a"))
+    upsert_talk(conn, _make_talk("scope-b"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="scope-a",
+                frame_sec=0.0,
+                image_path="/tmp/scope-a/frame.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    assert frames_repo.get(conn, frame_id=fid, video_id="scope-b") is None
+
+
+# -- frames_repo.update_pooled + replace_patches ------------------------------
+
+
+def _stub_pooled_vec(value: float = 0.25) -> np.ndarray:
+    return np.full((128,), value, dtype=np.float32)
+
+
+def _stub_patches(n: int, base: float = 0.1) -> np.ndarray:
+    return np.stack(
+        [np.full((128,), base + i * 0.01, dtype=np.float32) for i in range(n)]
+    )
+
+
+def test_update_pooled_round_trip(conn):
+    """update_pooled writes a pgvector(128); SELECT back must round-trip
+    within float tolerance. Cosine HNSW lookups depend on this."""
+    import numpy as np
+
+    upsert_talk(conn, _make_talk("pool-vid"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="pool-vid",
+                frame_sec=0.0,
+                image_path="/tmp/pool-vid/frame.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    vec = _stub_pooled_vec(0.3)
+    frames_repo.update_pooled(conn, fid, vec)
+
+    from pgvector.psycopg import register_vector
+
+    register_vector(conn)
+    row = conn.execute(
+        "SELECT pooled_embedding FROM frames WHERE frame_id = %s",
+        (fid,),
+    ).fetchone()
+    np.testing.assert_allclose(row[0], vec, rtol=1e-5, atol=1e-5)
+
+
+def test_update_pooled_rejects_wrong_dim(conn):
+    upsert_talk(conn, _make_talk("dim-vid"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="dim-vid",
+                frame_sec=0.0,
+                image_path="/tmp/dim-vid/frame.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    import numpy as np
+
+    with pytest.raises(ValueError, match="update_pooled expects"):
+        frames_repo.update_pooled(conn, fid, np.zeros((127,), dtype=np.float32))
+
+
+def test_replace_patches_inserts_one_row_per_patch_at_aligned_index(conn):
+    """P patches → P rows with patch_index = 0..P-1 and embedding round-trip."""
+    import numpy as np
+
+    upsert_talk(conn, _make_talk("patch-vid"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="patch-vid",
+                frame_sec=0.0,
+                image_path="/tmp/patch-vid/frame.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    patches = _stub_patches(5, base=0.2)
+    frames_repo.replace_patches(conn, fid, patches)
+
+    from pgvector.psycopg import register_vector
+
+    register_vector(conn)
+    rows = conn.execute(
+        "SELECT patch_index, embedding FROM frame_patches "
+        "WHERE frame_id = %s ORDER BY patch_index",
+        (fid,),
+    ).fetchall()
+    assert [r[0] for r in rows] == [0, 1, 2, 3, 4]
+    for i, r in enumerate(rows):
+        np.testing.assert_allclose(r[1], patches[i], rtol=1e-5, atol=1e-5)
+
+
+def test_replace_patches_is_idempotent_full_replace(conn):
+    """A second replace_patches call must leave only the second's rows —
+    not concatenated with the first. P can shrink across re-encodes
+    (different image) and gaps in patch_index would be confusing."""
+    upsert_talk(conn, _make_talk("idem-patch"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="idem-patch",
+                frame_sec=0.0,
+                image_path="/tmp/idem-patch/frame.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    frames_repo.replace_patches(conn, fid, _stub_patches(7, base=0.5))
+    frames_repo.replace_patches(conn, fid, _stub_patches(3, base=0.9))
+
+    n = conn.execute(
+        "SELECT count(*) FROM frame_patches WHERE frame_id = %s", (fid,)
+    ).fetchone()[0]
+    assert n == 3
+    indices = [
+        r[0]
+        for r in conn.execute(
+            "SELECT patch_index FROM frame_patches "
+            "WHERE frame_id = %s ORDER BY patch_index",
+            (fid,),
+        ).fetchall()
+    ]
+    assert indices == [0, 1, 2]
+
+
+def test_replace_patches_rejects_empty(conn):
+    """A zero-patch frame is structurally impossible from ColQwen — the
+    handler must filter that case rather than persist gaps."""
+    import numpy as np
+
+    upsert_talk(conn, _make_talk("empty-patch"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="empty-patch",
+                frame_sec=0.0,
+                image_path="/tmp/empty-patch/frame.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="at least 1 patch row"):
+        frames_repo.replace_patches(conn, fid, np.zeros((0, 128), dtype=np.float32))
+
+
+def test_replace_patches_rejects_wrong_dim(conn):
+    import numpy as np
+
+    upsert_talk(conn, _make_talk("dim-patch"))
+    [fid] = frames_repo.upsert(
+        conn,
+        [
+            FrameSample(
+                video_id="dim-patch",
+                frame_sec=0.0,
+                image_path="/tmp/dim-patch/frame.png",
+                sha256="a" * 64,
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="replace_patches expects"):
+        frames_repo.replace_patches(conn, fid, np.zeros((3, 64), dtype=np.float32))
