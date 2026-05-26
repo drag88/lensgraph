@@ -4,10 +4,11 @@ You are a senior AI engineer joining LensGraph in a fresh session. Phase 1's tex
 
 <repo_state>
 Working directory: /Users/aswinsreenivas/1_Code/1.1_personal/lensgraph/
-HEAD: 645c37e chore: ruff format sweep across the tree
-  (or later — a docs(handoff) commit for slice-1 closeout may land on top)
+Implementation head: 645c37e chore: ruff format sweep across the tree
+  Trailing docs(handoff) / docs/test closeout commits may sit on top —
+  confirm 645c37e is in `git log`, don't pin to an exact HEAD.
 
-Last 12 commits (context, do not re-litigate):
+Recent commits (context, do not re-litigate):
   645c37e chore: ruff format sweep across the tree
   45575df fix(ingest,readiness): slice-1 review hardening
   3c47a4c feat(ingest): frame-sampling worker — slice 1 of phase-1 week-5
@@ -175,9 +176,10 @@ Avoid this week:
 <first_actions>
 Run these in order before any code. Verify state matches <repo_state>; if it does not, surface the delta before proceeding.
 
-1. git log --oneline -5
-   Top should be: 645c37e chore: ruff format sweep across the tree
-   (or a docs(handoff) slice-1-closeout commit on top of that)
+1. git log --oneline -10
+   Confirm 645c37e (chore: ruff format sweep) appears. Trailing
+   docs(handoff) / docs/test closeout commits may sit on top — that's
+   expected; don't pin to an exact HEAD.
 
 2. make validate-evals-strict     # 0 warnings, 11 verified examples
 3. make phase0-gate                # OK (11/3)

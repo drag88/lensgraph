@@ -308,3 +308,82 @@ def test_cli_all_returns_nonzero_when_some_required_videos_missing(
     assert "ingest_frames" not in drained_queues  # drain skipped, as designed
     assert "1 of 2 required videos missing" in out
     assert "vid-b.mp4" in out
+
+
+def test_cli_all_drains_ingest_frames_when_all_required_videos_staged(
+    clean_db, tmp_path, monkeypatch, capsys
+):
+    """All required .mp4 files staged → _drain runs once for ingest_frames
+    AND main exits 0 (text readiness stubbed complete via readiness.for_corpus).
+
+    This is the positive-path regression for the required-videos guard: the
+    other tests confirm the gate REJECTS partial/empty staging; this one
+    confirms the gate ADMITS full staging without forcing exit 1."""
+    from ingest.readiness import VideoReadiness
+
+    rel, sha = _stage_vtt(tmp_path / "transcripts", "full.vtt")
+    corpora_root = tmp_path / "eval" / "corpora" / "full_corpus"
+    corpora_root.mkdir(parents=True)
+    (corpora_root / "talks.yaml").write_text(
+        "- video_id: vid-c\n"
+        '  title: "Complete Slides Talk"\n'
+        '  speaker: "S"\n'
+        '  url: "https://example.com/c"\n'
+        "  duration_sec: 20\n"
+        "  format_tags: [slides_heavy]\n"
+        "  license: cc-by\n"
+        "  captions_source: manual_transcript\n"
+        f'  transcript_path: "{rel}"\n'
+        f'  transcript_sha256: "{sha}"\n'
+        '  accessed_at: "2025-01-01T00:00:00Z"\n',
+        encoding="utf-8",
+    )
+
+    # Stage the single required .mp4 — convention is
+    # videos/<corpus>/<source_video_id or video_id>.mp4.
+    videos_dir = tmp_path / "videos" / "full_corpus"
+    videos_dir.mkdir(parents=True)
+    (videos_dir / "vid-c.mp4").touch()
+
+    from ingest import cli_all
+
+    monkeypatch.setattr(cli_all, "REPO_ROOT", tmp_path)
+
+    # Track each _drain invocation by queue so we can assert ingest_frames
+    # drained exactly once.
+    drained_queues: list[str] = []
+
+    def fake_drain(conn, queue, handler):
+        drained_queues.append(queue)
+        return 0
+
+    monkeypatch.setattr(cli_all, "_drain", fake_drain)
+
+    # Stub readiness so text-side reports complete and we test ONLY the
+    # frames-drain gate / exit-code interaction.
+    stub_report = VideoReadiness(
+        video_id="vid-c",
+        talks_present=True,
+        chunks_n=1,
+        dense_n=1,
+        sparse_n=1,
+        tokens_n=1,
+        frame_sample_status="completed",
+        frames_n=2,
+    )
+    monkeypatch.setattr(
+        cli_all.readiness, "for_corpus", lambda conn, corpus_dir: [stub_report]
+    )
+
+    exit_code = cli_all.main(["--corpus", "full_corpus"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert drained_queues.count("ingest_frames") == 1
+    # Drain order is chunk → embed_text → frames per cli_all.main; assert
+    # the full sequence so a future reorder surfaces here.
+    assert drained_queues == ["ingest_chunk", "ingest_embed_text", "ingest_frames"]
+    assert "drained 0 from ingest_frames" in out
+    # The skip-with-warning messages must NOT appear when all required
+    # videos are staged.
+    assert "skipping ingest_frames drain" not in out

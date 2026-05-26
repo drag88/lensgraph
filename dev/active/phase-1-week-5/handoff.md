@@ -3,7 +3,7 @@
 **Written:** 2026-05-25, end of week-4 retrieval session (last updated 2026-05-26 after slice-1 fix slice)
 **Read by:** the next session, before any implementation
 **Authoritative design:** `docs/phase-1-design.md` rev 4 (commit `e950583`)
-**Branch head:** `645c37e` `chore: ruff format sweep across the tree`
+**Implementation head:** `645c37e` `chore: ruff format sweep across the tree`. A trailing `docs(handoff)` closeout commit may sit on top of that — don't pin a fresh session to an exact HEAD, just confirm `645c37e` is in `git log` and gates are green.
 **Slice 1 commits on top of session-start head:** `3c47a4c feat(ingest): frame-sampling worker — slice 1 of phase-1 week-5`, then `45575df fix(ingest,readiness): slice-1 review hardening` (absolute paths + required-videos guard + frame_sample readiness), then `645c37e chore: ruff format sweep across the tree`.
 
 ---
