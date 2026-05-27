@@ -34,7 +34,18 @@ CONFIG_DIR = EVAL_ROOT / "config"
 FIXTURES_DIR = EVAL_ROOT / "tests" / "fixtures"
 PROJECT_ROOT = EVAL_ROOT.parent
 
-GOLD_FILES = ["dev_gold.jsonl", "test_gold.jsonl", "negative.jsonl", "synthesis.jsonl"]
+GOLD_FILES = [
+    "dev_gold.jsonl",
+    "test_gold.jsonl",
+    "negative.jsonl",
+    "synthesis.jsonl",
+    # Visual eval gate — slide/screen_code/diagram/whiteboard gold examples.
+    # Currently scaffolded as an empty committed file: visual retrieval needs
+    # ingested MP4 frames + ColQwen patches AND verified visual gold examples
+    # before the eval scores anything. Schema + verified:true rules apply
+    # exactly as they do for the four text-eval files above.
+    "visual_gold.jsonl",
+]
 
 
 def load_validator(name: str) -> Draft202012Validator:

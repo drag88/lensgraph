@@ -1,0 +1,113 @@
+# Visual Retrieval Eval — Gate STUB (2026-05-27)
+
+**Status:** ⚪ STUB. Infrastructure landed; quality gate not yet exercised against real data.
+**Component:** `visual_retrieval` (ColQwen2.5 via `colpali-engine`)
+**Candidate id:** `colqwen2.5` (only candidate in `eval/config/model_candidates.yaml::candidates.visual_retrieval`)
+**Eval code path:** `eval_runs.code_path = 'visual_eval'` (distinct from bakeoff #1's `'embeddings_bakeoff'`).
+
+## What this gate is — and what it is NOT
+
+Bakeoff #1 (2026-05-27, `eval/reports/2026-05-27_embeddings_bakeoff/`) locked **text embeddings only** (`bge-m3-all-channels`, vector-best TR@5 = 1.00). Its candidate set (`candidates.text_embeddings`) and its minimum (`timestamp_recall_at_5_vector_only_min: 0.75`) cover the three BGE-M3 text channels — `dense`, `sparse`, `multivec` — and report RRF over those plus BM25. **Visual retrieval is the 5th channel in the production loop (`generate/nodes/retrieve.py`) and is NOT covered by that minimum.** Quality of the visual channel is the responsibility of THIS gate, on its own corpus, with its own metrics.
+
+This report is a **stub** because two prerequisites are not yet in place:
+
+1. **Verified visual gold examples.** Today's `dev_gold.jsonl` is transcript-only (modality = `["transcript"]` on all 10 examples + the one synthesis case). `visual_gold.jsonl` is a committed scaffold and is **empty** by design — the validator enforces `verified: true` on every committed example, so unverified candidates cannot land here without watching the clip first.
+2. **Ingested MP4 frames + ColQwen patches.** `frames` and `frame_patches` are both empty in the live DB (no `.mp4` files have been staged). `retrieve.visual.retrieve_frames()` and `retrieve.visual.retrieve()` already handle the empty-substrate case by returning `[]`, but a recall metric over `[]` is degenerate.
+
+Until both prerequisites are satisfied, the runner skips with a clear message; the test asserts the skip text so the gate cannot silently rot.
+
+## Metrics
+
+The eval implements three primitives in `eval/runners/measure_visual.py`:
+
+### VisualFrameRecall@k
+Pass if any of the top-k frames from `retrieve.visual.retrieve_frames` satisfies:
+
+```
+frame.video_id == gold.video_id
+AND gold.start_sec - tolerance_sec <= frame.frame_sec <= gold.end_sec + tolerance_sec
+```
+
+Default `tolerance_sec = FRAME_SAMPLE_EVERY_SEC = 10.0` — the cadence `ingest/frames.py` uses when sampling PNGs from MP4s. The tolerance protects a gold span that lands between two sampled frames (e.g., gold `[174, 184]` with frames at 170, 180); it is documented explicitly so future tightening goes through review.
+
+### VisualChunkTR@k
+Pass if any of the top-k chunks from `retrieve.visual.retrieve` satisfies open-interval overlap with the gold span — exactly the convention bakeoff #1 used for text TR@5:
+
+```
+chunk.video_id == gold.video_id
+AND chunk.start_sec < gold.end_sec
+AND chunk.end_sec   > gold.start_sec
+```
+
+This is the chunk-level form of recall, capturing the full 3-stage ColQwen pipeline (pooled prefilter → frame-to-chunk map → MaxSim refine over frame patches).
+
+### VisualLift@k (optional; on by default)
+For each visual gold example, compare:
+
+```
+with_visual    = rrf({bm25, dense, sparse, multivec, visual}, top_k=5)
+without_visual = rrf({bm25, dense, sparse, multivec},          top_k=5)
+
+lift_pp        = (pass_rate(with_visual) - pass_rate(without_visual)) * 100
+```
+
+`without_visual` is identical to the `rrf_4ch` channel measured in bakeoff #1. Lift answers: "does adding the visual channel help on examples where visual signal is hypothesized to matter?" This is what justifies keeping ColQwen in the production loop at all.
+
+Lift is small-sample noisy by construction — on a 5-example visual gold a single flip is 20pp. Treat single-digit lift values as inside the noise; treat large negative lift on slide-required modality as a real signal to investigate before claiming visual retrieval is pulling its weight.
+
+## Outputs (when the gate runs)
+
+Same eval_runs + eval_results contract as bakeoff #1 (phase-2 hard rule):
+
+- One `eval_runs` row with `code_path = 'visual_eval'`, `embedding_model_id = 'colqwen2.5'`, `summary` carrying `visual_frame_recall_at_k`, `visual_chunk_tr_at_k`, optional `visual_lift`, `per_example` (pass booleans), and the candidate yaml SHA.
+- One `eval_results` row per visual gold example, with `system_output` carrying the gold span + the top-k frames and chunks the runner actually retrieved, and `metrics` carrying the pass booleans (and lift per-example when computed).
+- Writes are wrapped in a single transaction; a mid-loop failure rolls back. (Same atomicity contract as the bakeoff #1 review-fix #2 patch.)
+
+**No winner is locked.** ColQwen2.5 is the only candidate; there is no ADR 004 selection to encode. If a second visual candidate is added in the future, the gate becomes a selection bakeoff (and gets its own MDX at that point).
+
+## Skip semantics
+
+`scripts/run_visual_eval.py` exits **0** with a clear `SKIPPED: ...` line in either of:
+
+```
+SKIPPED: visual_gold.jsonl has 0 single_clip examples. ...
+SKIPPED: visual substrate not ingested
+         (frames_with_pooled_embedding=0, frame_patches=0). ...
+```
+
+The slow integration test (`eval/tests/test_run_visual_eval.py`) asserts the right skip text is emitted and that NO `eval_runs` row leaks during a skip. The fast unit tests (`eval/tests/test_measure_visual.py`) cover the metric primitives with synthetic `FrameResult` / `ChannelResult` / `FusedResult` inputs — those run under `make test` in ~1s.
+
+## What it takes to unblock the gate
+
+1. **Verified visual gold examples.** Candidates worth verifying first (because their existing transcript context already hints at slide-heavy moments):
+   - `tengyu-retrieval-accuracy-headroom` (video `W_CYk2ogcDI`, span `[305, 410]`) — Tengyu Ma quoting average retrieval accuracy across ~100 datasets is a number near-certain to appear on a slide.
+   - `tengyu-matryoshka-and-quantization` (video `W_CYk2ogcDI`, span `[405, 510]`) — Matryoshka diagram is a recurring slide in this talk family.
+   - `google-cli-what-it-is-and-install` (video `nXafozNIk3c`, span `[498, 590]`) — CLI install commands frequently land on a slide or terminal screen share.
+
+   For each: watch the actual clip; if a slide / screen / diagram is visible during the span and is the answer-bearing surface, copy the dev_gold row into `visual_gold.jsonl` with `modality` updated to include `slide` / `screen_code` / `diagram` / `whiteboard` as appropriate, `verified: true` after confirmation, and a fresh `curated_at`. The validator enforces both the schema and the verification rule on every committed entry.
+
+2. **Ingest MP4 frames + ColQwen patches.** `ingest/frames.py` and the ColQwen patch worker need to run against the source videos (`videos/<video_id>.mp4`, gitignored). Once `frames.pooled_embedding` and `frame_patches` are populated, the substrate check in `run_visual_eval.py` flips from SKIP to RUN automatically.
+
+3. **Run the gate.** `uv run python -m scripts.run_visual_eval` produces the `eval_runs` row + per-example `eval_results` and stdout-reports the metrics. The slow integration test starts asserting against real numbers instead of just the skip path.
+
+## What's deliberately out of scope
+
+- **No second visual candidate yet.** Adding `gemini-embedding-2-singlevec` to a real bakeoff is a possible future amendment; today it lives in the YAML only as a baseline reference for the writeup.
+- **No bakeoff #2 (generator + judge) interaction.** This gate measures retrieval. Faithfulness on visual-required examples is a downstream concern for bakeoff #2's generator + judge.
+- **No `test_gold` consumption.** As with bakeoff #1, only `dev_gold` (here: `visual_gold.jsonl`) informs anything. The locked text `test_gold.jsonl` is untouched.
+
+## File map
+
+```
+eval/corpora/ai_engineering_v0/
+├── visual_gold.jsonl                # committed, empty scaffold (validator enforces verified:true)
+└── (no draft committed — drafts go under *_gold.draft.jsonl per .gitignore)
+
+eval/runners/measure_visual.py       # metric primitives + measure_visual()
+scripts/run_visual_eval.py           # runner: load → measure → eval_runs + eval_results (transactional)
+
+eval/tests/test_measure_visual.py    # fast unit tests for metric primitives + lift
+eval/tests/test_run_visual_eval.py   # slow integration test (skip when empty; run when populated)
+
+eval/reports/2026-05-27_visual_eval/methodology.mdx  # this file
+```

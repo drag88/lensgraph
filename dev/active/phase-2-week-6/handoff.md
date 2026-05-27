@@ -1,15 +1,15 @@
 # Handoff — Phase 2 Week 6 (Bakeoff #1: text embeddings) — CLOSED
 
 **Opened:** 2026-05-27 (phase-1 week-5 closed at `8d6694a`)
-**Closed:** 2026-05-27 — bakeoff #1 locked, all gates green.
-**Status:** ✅ Bakeoff #1 shipped. `bge-m3-all-channels` locked as the text-embeddings winner. Best-of vector channel TR@5 = 1.00 against the ADR 004 v3.1 minimum (≥ 0.75). No ADR amendment required.
+**Closed:** 2026-05-27 — bakeoff #1 locked, all gates green; visual eval scaffolded.
+**Status:** ✅ Bakeoff #1 (text embeddings) shipped. `bge-m3-all-channels` locked as the text-embeddings winner. Best-of vector channel TR@5 = 1.00 against the ADR 004 v3.1 minimum (≥ 0.75). No ADR amendment required. ⚪ Visual retrieval (ColQwen2.5 — the 5th channel) has its own eval gate (`eval_runs.code_path = 'visual_eval'`) — infrastructure landed this session as a STUB; the gate runs once verified visual gold + ingested ColQwen frames/patches exist. Bakeoff #1 did NOT measure or lock visual retrieval.
 **Authoritative design:** `docs/phase-1-design.md` rev 4 (commit `e950583`) — still the contract.
 **Prior handoff:** `dev/active/phase-1-week-5/handoff.md` (CLOSED week 5).
 **Next:** Bakeoff #2 (generator + judge) — week 7, **not started**. Out of scope for this handoff.
 
 ---
 
-## Outcome
+## Outcome — Bakeoff #1 (text embeddings only)
 
 | Channel | TR@5 (n=10 single_clip dev_gold) | Counts toward vector-only min? |
 |---|---:|---|
@@ -21,6 +21,15 @@
 Vector-best = **1.00** ≥ 0.75 minimum. `bge-m3-all-channels` cleared on the first measurement. Voyage / Gemini fallbacks not triggered; Mission 2 (ADR 004 v3.2 amendment) did not fire.
 
 The single `rrf_4ch` failure is `sally-staying-on-task-attention` — dense and multivec both put the gold chunk in their top-5, but BM25's contributions to the fused list pushed it past rank 5. Likely a small-corpus RRF artifact; revisit at v1 scale before tuning `RRF_K`.
+
+## Outcome — Visual retrieval eval (separate gate, STUB)
+
+ColQwen2.5 is the 5th retrieval channel in production but was **not** measured by bakeoff #1 — the embeddings minimum in ADR 004 v3.1 is text-channel-only and the visual candidate set has no quality minimum encoded yet. A dedicated eval gate landed this session with `code_path = 'visual_eval'`:
+
+- **Metrics:** `VisualFrameRecall@k` (frame timestamp ± frame-sample cadence), `VisualChunkTR@k` (open-interval overlap, same convention as text), `VisualLift@k` (5-ch RRF with visual vs 4-ch RRF without visual). Definitions and rationale in `eval/reports/2026-05-27_visual_eval/methodology.mdx`.
+- **Status today:** STUB. The runner skips with a clear message because (a) `visual_gold.jsonl` is a committed empty scaffold (no verified visual examples yet — dev_gold is transcript-only) and (b) `frames` / `frame_patches` are empty (no MP4 + ColQwen patch ingest run yet). Both must be populated before the gate scores anything; the test asserts the skip text so the gate cannot silently rot.
+- **Atomicity:** Same eval_runs + eval_results transactional contract as bakeoff #1 (review-fix #2 patch). No winner is locked — ColQwen2.5 is the only candidate.
+- **Unblock path:** verify slide-likely candidate examples from existing dev_gold (the methodology MDX names three), run MP4 ingest + ColQwen patch worker, then `uv run python -m scripts.run_visual_eval`.
 
 ---
 
@@ -87,9 +96,12 @@ eval/reports/2026-05-27_embeddings_bakeoff/
 ├── methodology.mdx     # selection-rule application, per-channel table, cost-differential, runner-up framing
 ├── summary.json        # aggregate dump of eval_runs.summary
 └── per_example.jsonl   # one row per dev_gold example with per-channel pass@5
+
+eval/reports/2026-05-27_visual_eval/
+└── methodology.mdx     # STUB: visual eval gate spec, metrics, skip semantics, unblock path
 ```
 
-The `methodology.mdx` is the resume-grade writeup. The MDX, the locked row in `eval_runs`, and the per-example rows in `eval_results` are the bakeoff #1 record.
+The bakeoff #1 `methodology.mdx` is the resume-grade writeup for text embeddings. The visual eval MDX is a stub — it will earn its row in the resume once the substrate + gold are populated and the runner produces real numbers.
 
 ---
 
@@ -127,6 +139,13 @@ DB state at close: `eval_runs` now has 1 row with `code_path='embeddings_bakeoff
 - `eval/runners/judges/` versioned prompts — week 7 (bakeoff #2).
 - Async LangGraph (`ainvoke`) — phase 4.
 - OpenRouter failover wiring — phase 4.
+
+### Visual eval — gated on substrate + gold (not a bakeoff #2 dependency)
+
+- Stage verified visual gold examples in `eval/corpora/ai_engineering_v0/visual_gold.jsonl` (committed; validator enforces `verified: true`). See `eval/reports/2026-05-27_visual_eval/methodology.mdx` for slide-likely candidate examples worth verifying first.
+- Run MP4 + ColQwen patch ingest to populate `frames.pooled_embedding` and `frame_patches`.
+- Then `uv run python -m scripts.run_visual_eval` produces real numbers; the slow test flips from skip-path to real-assertions path automatically.
+- No ADR amendment needed — ColQwen2.5 is the only visual candidate; the gate is quality, not selection.
 
 ---
 
