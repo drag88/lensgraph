@@ -22,7 +22,7 @@ Two pieces ship in the most recent slice:
 ### Gates green at HEAD
 
 ```
-make test                58 fast tests pass (46 at slice-1 close + 12 slice-2 fast)
+make test                60 fast tests pass (58 at slice-2 close + 2 slice-2 review-fix tests)
 make lint                clean
 make phase0-gate         OK (11/3 verified gold across distinct talks)
 make validate-evals-strict  clean
@@ -67,15 +67,21 @@ If a future colpali-engine release shifts the export path away from `colpali_eng
 
 ### Slice 2 / visual stage 2 + reranker — CLOSED
 
-**Status: CLOSED 2026-05-26.** Two commits:
+**Status: CLOSED 2026-05-26 (review fixes folded in 2026-05-27).** Five commits in slice 2 across initial work + review fixes:
 
-- `3fc5ab4 feat(embed,ingest)` — ColQwen patches + embed_frames pipeline.
-  `embed/colqwen.py` exposes `encode_image_patches`, `encode_text_query_patches`, `pool_patches`; pooled encoders refactored to delegate (one encoder path). `db/repos/frames.py` adds `get`, `update_pooled`, `replace_patches`. `ingest/handlers.py::embed_frames_handler` is the terminal step: lookup → PIL load → encode → write `frame_patches` + `frames.pooled_embedding` from the SAME patch matrix. `ingest/cli_all.py` drains `ingest_embed_frames` after `ingest_frames` (same required-videos guard).
+- `3fc5ab4 feat(embed,ingest)` — ColQwen patches + embed_frames pipeline. `embed/colqwen.py` exposes `encode_image_patches`, `encode_text_query_patches`, `pool_patches`; pooled encoders refactored to delegate (one encoder path). `db/repos/frames.py` adds `get`, `update_pooled`, `replace_patches`. `ingest/handlers.py::embed_frames_handler` is the terminal step: lookup → PIL load → encode → write `frame_patches` + `frames.pooled_embedding` from the SAME patch matrix. `ingest/cli_all.py` drains `ingest_embed_frames` after `ingest_frames` (same required-videos guard).
 
-- `57c0c9e feat(retrieve)` — visual stage 2 + reranker.
-  `retrieve/visual.py::retrieve()` (channel-level) does pooled HNSW prefilter → frame→chunk JOIN → MaxSim over concatenated per-chunk patches. `retrieve/rerank.py` is a NEW module wrapping `sentence_transformers.CrossEncoder` on `BAAI/bge-reranker-v2-m3` (resolved from `model_candidates.yaml::candidates.reranker.options[0]` — no hardcoded model strings). Raw logits sigmoid'd to 0-1 confidence.
+- `57c0c9e feat(retrieve)` — visual stage 2 + reranker. `retrieve/visual.py::retrieve()` (channel-level) does pooled HNSW prefilter → frame→chunk JOIN → MaxSim over concatenated per-chunk patches. `retrieve/rerank.py` is a NEW module wrapping `sentence_transformers.CrossEncoder` on `BAAI/bge-reranker-v2-m3` (resolved from `model_candidates.yaml::candidates.reranker.options[0]` — no hardcoded model strings).
 
   **Reranker backend deviation worth flagging:** the design says "BGE-reranker-v2-m3 via FlagEmbedding". FlagEmbedding 1.4.0 calls `tokenizer.prepare_for_model`, which was removed in transformers 5.x (we're pinned at 5.9.0). Every `FlagReranker.compute_score` call crashes with `AttributeError: XLMRobertaTokenizer has no attribute prepare_for_model`. Switched to `sentence_transformers.CrossEncoder` — same model checkpoint, modern tokenizer API. If FlagEmbedding catches up to transformers 5.x, the switch back is one import + one constructor call. Not worth an ADR amendment because the model + scoring semantics are unchanged; only the loader differs.
+
+Review fixes (2026-05-27) — three independent regressions caught after slice-2 commit landed:
+
+1. **Reranker double-sigmoid.** `CrossEncoder.predict()` applies the model's default Sigmoid activation; the v0 of `rerank.py` then applied `torch.sigmoid` again, producing `sigmoid(sigmoid(raw))` pinned to (0.5, ~0.73). Fixed by passing `activation_fn=torch.nn.Identity()` so we get raw logits, then sigmoid exactly once. Regression test in `test_rerank_lazy.py` proves rerank_score == sigmoid(raw) for inputs [0, 2, -2] via a fake CrossEncoder.
+
+2. **ColQwen mixed-batch pooling.** When a batch had mixed patch counts, `encode_image_pooled` averaged across the FULL padded `(N, max_P, 128)` tensor — silently including zero-padding rows from shorter images and shrinking their pooled vectors toward zero (broken cosine for HNSW prefilter). Refactored to extract a shared `_encode_images_with_true_counts()` helper that returns padded patches + per-image true counts; `encode_image_pooled` now averages only the first `true_counts[i]` rows per image. `encode_image_patches` public surface unchanged. Fast monkeypatched test asserts the (2, 4, 128) + [2, 4] case pools to [2.0, 5.0] vectors instead of the buggy [1.0, 5.0].
+
+3. **cli_all drain test stale assertion.** The positive-path test was written before slice 2A added the `ingest_embed_frames` drain — it expected the queue list `["ingest_chunk", "ingest_embed_text", "ingest_frames"]`. Updated to expect 4 queues in order and assert `ingest_embed_frames` drains exactly once.
 
 LangGraph loop + `make answer` exit gate (slice 3) remains deferred.
 

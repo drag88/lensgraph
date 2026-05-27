@@ -18,12 +18,12 @@ Recent commits (context, do not re-litigate):
   45575df fix(ingest,readiness): slice-1 review hardening
   3c47a4c feat(ingest): frame-sampling worker — slice 1 of phase-1 week-5
 
-Gates green at HEAD (verified after slice 2):
+Gates green at HEAD (verified after slice 2 + review fixes):
   make validate-evals-strict   OK (0 warnings, 11 verified gold)
   make phase0-gate             OK (11/3 across 3 talks)
-  make test                    OK (58 fast tests)
+  make test                    OK (60 fast tests)
   make lint                    OK
-  slice-2 slow suite           51 passed in ~55s warm
+  slice-2 slow suite           51 passed (cli_all_slow + full slice-2 suites)
 
 DB state (resumes from named volume pgdata after make db-up):
   3 talks ingested (ai_engineering_v0 corpus)
