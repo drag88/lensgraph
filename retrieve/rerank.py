@@ -16,11 +16,15 @@ BGE-reranker-v2-m3 checkpoint via the modern tokenizer API and is the
 maintained path for cross-encoder reranking. Same model weights, same
 scoring semantics — only the loader changes.
 
-Score is the cross-encoder's normalized 0-1 sigmoid output. We apply
-``torch.sigmoid`` to the raw logits explicitly so the contract
-(``rerank_score`` in [0, 1]) matches the design's "0-1 cross-encoder
-confidence" wording regardless of whether a future model emits raw
-logits or pre-normalised scores.
+Score is the cross-encoder's normalized 0-1 sigmoid output. We pass
+``activation_fn=torch.nn.Identity()`` to ``CrossEncoder.predict()`` so
+the default model activation is bypassed (BGE-reranker-v2-m3 is
+registered with a Sigmoid activation in its config; predict()'s default
+``activation_fn=None`` means "use the model's"). Then we apply
+``torch.sigmoid`` exactly once. Without the Identity override the score
+would be ``sigmoid(sigmoid(raw_logit))``, which is monotonic but pinned
+to the (0.5, ~0.73) sub-range — fine for ordering, broken as a 0-1
+confidence contract.
 
 The reranker runs CPU-only on M-series per design §4 "BGE-reranker-v2-m3
 local CPU" — a hosted alternative kicks in only if the p95 reranker
@@ -103,9 +107,10 @@ def rerank(
     RRF) does not require a call-site change.
 
     Algorithm: batch ``(query, candidate.text)`` pairs into
-    ``CrossEncoder.predict()`` → sigmoid the raw logits to 0-1 →
-    sort descending (tie-break by chunk_id for determinism) →
-    take top_k → emit RerankedResult rows with 1-indexed rank.
+    ``CrossEncoder.predict(activation_fn=Identity())`` → sigmoid the raw
+    logits to (0, 1) exactly once → sort descending (tie-break by chunk_id
+    for determinism) → take top_k → emit RerankedResult rows with
+    1-indexed rank.
     """
     if not candidates:
         return []
@@ -114,13 +119,19 @@ def rerank(
     import torch
 
     pairs: list[tuple[str, str]] = [(query, c.text) for c in candidates]
-    raw_scores = _reranker().predict(pairs, convert_to_numpy=True)
+    # activation_fn=Identity() bypasses the model's default Sigmoid so we
+    # receive raw logits and apply sigmoid ourselves — otherwise scores
+    # would be sigmoid(sigmoid(logit)), pinned to (0.5, ~0.73). Ordering
+    # survives the double-sigmoid but the public ``rerank_score`` contract
+    # ("0-1 cross-encoder confidence") does not.
+    raw_scores = _reranker().predict(
+        pairs,
+        convert_to_numpy=True,
+        activation_fn=torch.nn.Identity(),
+    )
     # CrossEncoder returns a 0-d numpy array for one pair, 1-d for many.
     # Normalize both shapes to a 1-d list.
     arr = np.atleast_1d(np.asarray(raw_scores, dtype=np.float32))
-    # BGE-reranker emits raw logits; sigmoid maps to (0, 1) so the public
-    # ``rerank_score`` matches the design's "0-1 cross-encoder confidence"
-    # contract regardless of model.
     scores_list = torch.sigmoid(torch.from_numpy(arr)).tolist()
 
     pre_ranked: list[tuple[FusedResult, float]] = list(zip(candidates, scores_list, strict=True))
