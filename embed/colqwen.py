@@ -88,21 +88,22 @@ def _model() -> Any:
     return model, processor, device
 
 
-def encode_image_patches(images: list) -> np.ndarray:
-    """Encode a batch of PIL images. Returns (N, P, POOLED_DIM) float32 —
-    the full per-patch matrix, NOT pooled.
+def _encode_images_with_true_counts(images: list) -> tuple[np.ndarray, list[int]]:
+    """Internal: run the ColQwen image encoder once and return
+    (padded_patches, true_counts).
 
-    Empty input returns shape (0, 0, POOLED_DIM) without loading the model.
+    ``padded_patches`` is the (N, max_P, POOLED_DIM) float32 tensor from
+    the model. ``true_counts[i]`` is the count of REAL patch rows for
+    image ``i`` (rows ``true_counts[i] .. max_P`` are zero-padding).
 
-    P is the variable per-image patch count. For batched input with mixed
-    patch counts, rows past each image's true patch count are zero-padded
-    (benign for MaxSim — zero rows contribute zero similarity). The
-    embed_frames_handler encodes one image at a time, so it never sees
-    padding rows; multi-image batching is a future optimization.
+    Shared between ``encode_image_patches`` (returns the padded tensor
+    as-is) and ``encode_image_pooled`` (averages only the real rows per
+    image) so both consume identical model output without a second model
+    call. The attention_mask from the processor's batch dict drives the
+    true_counts list; if the processor stops emitting a mask, the true
+    counts fall back to max_P (i.e. every row is treated as real — the
+    pre-mask v0 behavior).
     """
-    if not images:
-        return np.zeros((0, 0, POOLED_DIM), dtype=np.float32)
-
     import torch
 
     model, processor, device = _model()
@@ -123,40 +124,73 @@ def encode_image_patches(images: list) -> np.ndarray:
             f"ColQwen2.5 patch dim mismatch: got {patches_np.shape[2]}, expected {POOLED_DIM}"
         )
 
-    # Trim per-image padding using the input attention_mask. The processor
-    # pads shorter images to max_num_patches in the batch; the attention
-    # mask flags real-vs-pad positions. Trim then re-pad with zeros to a
-    # uniform shape — this preserves the (N, P, D) contract while keeping
-    # padding rows zero so MaxSim's max-over-rows is correctness-preserving.
+    max_p = patches_np.shape[1]
     mask = batch.get("attention_mask")
     if mask is not None:
         mask_np = mask.cpu().numpy().astype(bool)
-        true_counts = mask_np.sum(axis=1).tolist()
-        if all(c == patches_np.shape[1] for c in true_counts):
-            return patches_np  # nothing to trim — all images have full patches
+        true_counts = [int(c) for c in mask_np.sum(axis=1).tolist()]
+    else:
+        true_counts = [max_p] * patches_np.shape[0]
+
+    # Zero out padding rows so downstream MaxSim (max-over-rows) stays
+    # correctness-preserving even if a caller forgets the true_counts.
+    if any(c < max_p for c in true_counts):
         zeroed = np.zeros_like(patches_np)
         for i, n in enumerate(true_counts):
             zeroed[i, :n, :] = patches_np[i, :n, :]
-        return zeroed
-    return patches_np
+        patches_np = zeroed
+
+    return patches_np, true_counts
+
+
+def encode_image_patches(images: list) -> np.ndarray:
+    """Encode a batch of PIL images. Returns (N, P, POOLED_DIM) float32 —
+    the full per-patch matrix, NOT pooled.
+
+    Empty input returns shape (0, 0, POOLED_DIM) without loading the model.
+
+    P is the variable per-image patch count. For batched input with mixed
+    patch counts, rows past each image's true patch count are zero-padded
+    (benign for MaxSim — zero rows contribute zero similarity). The
+    embed_frames_handler encodes one image at a time, so it never sees
+    padding rows; multi-image batching is a future optimization.
+    """
+    if not images:
+        return np.zeros((0, 0, POOLED_DIM), dtype=np.float32)
+
+    patches, _true_counts = _encode_images_with_true_counts(images)
+    return patches
 
 
 def encode_image_pooled(images: list) -> np.ndarray:
     """Encode a batch of PIL images. Returns (N, POOLED_DIM) float32 —
-    one mean-pooled vector per image.
+    one mean-pooled vector per image, averaging ONLY real patch rows.
 
     Empty input returns shape (0, POOLED_DIM) without loading the model.
 
-    Implementation: delegates to encode_image_patches so the pooled vector
-    is provably the mean of the same patches that ``embed_frames_handler``
-    persists into ``frame_patches``. One encoder path, no drift between
-    the HNSW prefilter input and the MaxSim refine input.
+    Implementation: pulls the padded patches AND the per-image true
+    patch counts from the shared encoder, then averages each image's
+    first ``true_counts[i]`` rows. A naive ``patches.mean(axis=1)``
+    would include zero-padding rows from shorter images in a mixed
+    batch and silently shrink their pooled vectors toward zero — wrong
+    cosine-similarity behavior for the HNSW prefilter. The
+    embed_frames_handler encodes one image at a time so it's not
+    affected, but ad-hoc multi-image batching (callers staging the full
+    corpus offline) must produce correct pooled vectors.
     """
     if not images:
         return np.zeros((0, POOLED_DIM), dtype=np.float32)
 
-    patches = encode_image_patches(images)
-    pooled = patches.mean(axis=1).astype(np.float32, copy=False)
+    patches, true_counts = _encode_images_with_true_counts(images)
+    pooled = np.empty((patches.shape[0], POOLED_DIM), dtype=np.float32)
+    for i, n in enumerate(true_counts):
+        if n < 1:
+            # Defensive: an image with zero real patches would otherwise
+            # produce a NaN mean. Treat as zero pooled vector and let the
+            # HNSW NULL-pooled WHERE clause filter it downstream.
+            pooled[i] = 0.0
+            continue
+        pooled[i] = patches[i, :n, :].mean(axis=0)
 
     if pooled.shape[1] != POOLED_DIM:
         raise RuntimeError(

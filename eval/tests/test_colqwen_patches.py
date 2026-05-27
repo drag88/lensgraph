@@ -94,6 +94,56 @@ def test_encode_image_patches_empty_does_not_load_model(monkeypatch):
     assert out.shape == (0, 0, colqwen.POOLED_DIM)
 
 
+def test_encode_image_pooled_averages_only_real_patches_in_mixed_batch(monkeypatch):
+    """When a batch has mixed patch counts, encode_image_pooled must average
+    ONLY the real (unpadded) rows per image — not the zero-padded rows.
+
+    Catches the v0 regression where ``patches.mean(axis=1)`` summed zeros
+    from the padded rows into the denominator, shrinking shorter images'
+    pooled vectors toward zero (broken cosine similarity for the HNSW
+    prefilter).
+
+    Setup: monkeypatched ``_encode_images_with_true_counts`` returns a
+    (2, 4, 128) padded matrix and true_counts=[2, 4]. Image 0 has rows
+    [1, 3, 0, 0] (values broadcast to all 128 dims); image 1 has rows
+    [5, 5, 5, 5]. Expected pooled[0] = mean([1, 3]) = 2 (NOT
+    mean([1, 3, 0, 0]) = 1); expected pooled[1] = mean([5, 5, 5, 5]) = 5.
+    """
+    from embed import colqwen
+
+    dim = colqwen.POOLED_DIM
+    padded = np.zeros((2, 4, dim), dtype=np.float32)
+    padded[0, 0, :] = 1.0
+    padded[0, 1, :] = 3.0
+    # padded[0, 2:, :] remain 0 (padding rows for the shorter image)
+    padded[1, :, :] = 5.0
+    true_counts = [2, 4]
+
+    monkeypatch.setattr(
+        colqwen,
+        "_encode_images_with_true_counts",
+        lambda images: (padded, true_counts),
+    )
+
+    # Two sentinel "PIL images" — they're never inspected (the encoder is
+    # stubbed at the model call) but the count must match true_counts.
+    pooled = colqwen.encode_image_pooled([object(), object()])
+
+    assert pooled.shape == (2, dim)
+    np.testing.assert_allclose(
+        pooled[0], np.full((dim,), 2.0, dtype=np.float32),
+        err_msg=(
+            "pooled[0] must average only the first 2 real rows; including "
+            "zero-padded rows would have given the all-1.0 vector "
+            "((1+3+0+0)/4)."
+        ),
+    )
+    np.testing.assert_allclose(
+        pooled[1], np.full((dim,), 5.0, dtype=np.float32),
+        err_msg="pooled[1] (full real patches) must equal the single-value mean 5.0",
+    )
+
+
 # -- slow model-load tests ------------------------------------------------
 
 
