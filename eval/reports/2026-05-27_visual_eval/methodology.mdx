@@ -1,120 +1,145 @@
-# Visual Retrieval Eval — Gate STUB (2026-05-27)
+# Visual Retrieval Eval — First Real Run (2026-05-27)
 
-**Status:** ⚪ SUBSTRATE-BLOCKED STUB. Verified visual gold now exists; quality gate not yet exercised because video frames + ColQwen patches are not ingested.
+**Status:** ✅ RUN. First real-numbers pass of the visual eval gate.
+**Run ID:** `visual-eval-3d5384cd6446`
 **Component:** `visual_retrieval` (ColQwen2.5 via `colpali-engine`)
-**Candidate id:** `colqwen2.5` (only candidate in `eval/config/model_candidates.yaml::candidates.visual_retrieval`)
+**Candidate id:** `colqwen2.5` (resolved from `eval/config/model_candidates.yaml::candidates.visual_retrieval.options` filtered to `provider == 'local'`)
 **Eval code path:** `eval_runs.code_path = 'visual_eval'` (distinct from bakeoff #1's `'embeddings_bakeoff'`).
 
-## What this gate is — and what it is NOT
+## TL;DR
 
-Bakeoff #1 (2026-05-27, `eval/reports/2026-05-27_embeddings_bakeoff/`) locked **text embeddings only** (`bge-m3-all-channels`, vector-best TR@5 = 1.00). Its candidate set (`candidates.text_embeddings`) and its minimum (`timestamp_recall_at_5_vector_only_min: 0.75`) cover the three BGE-M3 text channels — `dense`, `sparse`, `multivec` — and report RRF over those plus BM25. **Visual retrieval is the 5th channel in the production loop (`generate/nodes/retrieve.py`) and is NOT covered by that minimum.** Quality of the visual channel is the responsibility of THIS gate, on its own corpus, with its own metrics.
+ColQwen2.5 visual retrieval ran end-to-end against 8 verified visual_gold examples on 529 ingested frames (~310 patches each) across 3 talks. **Standalone visual recall is weak on this corpus (1/8 chunk TR@5, 1/8 frame recall@5).** **Visual lift over the 4-channel text stack is 0 pp** — but that result is methodologically pinned: the 4-channel text RRF already passes 8/8 on these examples (text channels saturate), so this corpus cannot measure whether visual fusion helps when text fails. Bakeoff #1 already showed text channels are excellent here (vector-best TR@5 = 1.00 on dev_gold).
 
-This report is a **stub** because one prerequisite is still not in place:
+No visual quality gate is encoded in ADR 004 v3.1, so this is **not a lock-or-fail decision** — it is a quality measurement that informs whether ColQwen is earning its keep in the production fusion. Today's signal is "doesn't help on text-saturated examples; on its own, weaker than expected; insufficient evidence to remove it" — needs visual-required-only curation in v1 before a definitive call.
 
-1. **Verified visual gold examples.** Done. `visual_gold.jsonl` now has 8 verified single-clip examples, curated from all 10 `dev_gold.jsonl` single-clip rows. The curation accepted rows only when the transcript span and visible slide/screen/diagram evidence were answer-bearing in the same window. Two transcript-only rows were rejected: `tengyu-two-reasons-to-chunk` and `sally-staying-on-task-attention`. Evidence lives under `eval/curation/visual_gold_review/2026-05-27/`.
-2. **Ingested MP4 frames + ColQwen patches.** Still missing. `frames` and `frame_patches` are both empty in the live DB (no `.mp4` files have been staged). `retrieve.visual.retrieve_frames()` and `retrieve.visual.retrieve()` already handle the empty-substrate case by returning `[]`, but a recall metric over `[]` is degenerate.
+## Per-channel numbers (n = 8 single_clip visual_gold examples)
 
-Until both prerequisites are satisfied, the runner skips with a clear message; the test asserts the skip text so the gate cannot silently rot.
+| Metric | Value | Counts |
+|---|---:|---|
+| `VisualFrameRecall@5` (pooled HNSW prefilter, frame_sec ± 10s in span) | **0.125** | 1/8 |
+| `VisualChunkTR@5` (full 3-stage: pooled prefilter → frame→chunk → MaxSim refine) | **0.125** | 1/8 |
+| `VisualLift@5` (with vs without visual in 5-ch RRF) | **0.0 pp** | with: 8/8 · without: 8/8 |
 
-## Metrics
+The single chunk pass (`visual-tengyu-retrieval-accuracy-plot`) and the single frame pass (`visual-sally-large-json-composable-tools`) are **different examples** — no example passed both.
 
-The eval implements three primitives in `eval/runners/measure_visual.py`:
+## Per-example breakdown
 
-### VisualFrameRecall@k
-Pass if any of the top-k frames from `retrieve.visual.retrieve_frames` satisfies:
+| Example | frame_pass | chunk_pass | with_visual | without_visual |
+|---|:---:|:---:|:---:|:---:|
+| `visual-tengyu-library-analogy-slide` | ✗ | ✗ | ✓ | ✓ |
+| `visual-tengyu-retrieval-accuracy-plot` | ✗ | **✓** | ✓ | ✓ |
+| `visual-tengyu-matryoshka-quantization-slide` | ✗ | ✗ | ✓ | ✓ |
+| `visual-tengyu-query-document-enhancement-slide` | ✗ | ✗ | ✓ | ✓ |
+| `visual-sally-planning-tools-states-finish-gate` | ✗ | ✗ | ✓ | ✓ |
+| `visual-sally-large-json-composable-tools` | **✓** | ✗ | ✓ | ✓ |
+| `visual-google-agent-cli-getting-started-screen` | ✗ | ✗ | ✓ | ✓ |
+| `visual-google-adk2-resume-stopped-agents-screen` | ✗ | ✗ | ✓ | ✓ |
 
-```
-frame.video_id == gold.video_id
-AND gold.start_sec - tolerance_sec <= frame.frame_sec <= gold.end_sec + tolerance_sec
-```
+## What the two passes tell us
 
-Default `tolerance_sec = FRAME_SAMPLE_EVERY_SEC = 10.0` — the cadence `ingest/frames.py` uses when sampling PNGs from MP4s. The tolerance protects a gold span that lands between two sampled frames (e.g., gold `[174, 184]` with frames at 170, 180); it is documented explicitly so future tightening goes through review.
+**`tengyu-retrieval-accuracy-plot` — chunk passed, frame did not.** The pooled-vector prefilter (stage 1) put no in-span frame in its top 5, but the 3-stage MaxSim refine over the candidate chunks pulled in chunks 16 (374.96–404.64) and 17 (399.92–431.67) at ranks 4 and 1 respectively — both overlap the gold span [305, 410]. This validates the design intent of the 3-stage pipeline: **MaxSim over patches inside a wider candidate set can surface a chunk that the pooled-vector pre-rank missed.** It also says the pooled-mean is a coarse signal on its own for this query distribution.
 
-### VisualChunkTR@k
-Pass if any of the top-k chunks from `retrieve.visual.retrieve` satisfies open-interval overlap with the gold span — exactly the convention bakeoff #1 used for text TR@5:
+**`sally-large-json-composable-tools` — frame passed, chunk did not.** Three frames inside the gold span ranked top-1, top-2, top-3 by pooled cosine (frame_sec 480, 490, 540 in [460, 615]). But the 3-stage chunk path put no overlapping chunk in its top 5. Possible: those frames mapped via the half-open `[chunk.start, chunk.end)` interval to chunks that ARE in the gold span, but MaxSim then re-ranked OTHER chunks higher (a chunk with more candidate patches contributed by the prefilter outranks one with the gold-span frames). Worth digging into when v1 visual gold is bigger — this is the kind of edge that the chunking ablation needs to surface.
 
-```
-chunk.video_id == gold.video_id
-AND chunk.start_sec < gold.end_sec
-AND chunk.end_sec   > gold.start_sec
-```
+## What the lift says
 
-This is the chunk-level form of recall, capturing the full 3-stage ColQwen pipeline (pooled prefilter → frame-to-chunk map → MaxSim refine over frame patches).
+`with_visual_pass_rate = 1.00`, `without_visual_pass_rate = 1.00`, **`lift = 0.0 pp`**. The 4-channel text RRF already retrieves the gold chunk in its top 5 on every example, so adding the visual channel as a 5th cannot change the pass rate. **This corpus cannot answer "does visual fusion help?"** — by construction, text retrieval is saturated. The honest framing in the writeup: "visual retrieval does no harm to the production stack on these examples; whether it helps in cases where text fails is a separate question requiring visual-required-only gold examples."
 
-### VisualLift@k (optional; on by default)
-For each visual gold example, compare:
+## What this measurement does NOT decide
 
-```
-with_visual    = rrf({bm25, dense, sparse, multivec, visual}, top_k=5)
-without_visual = rrf({bm25, dense, sparse, multivec},          top_k=5)
+- **ColQwen is not removed from the production loop on this evidence.** 8 examples is small-N. Removing the visual channel based on "lift = 0 on a text-saturated set" is a methodology mistake — the lift was measured under conditions where it could not show.
+- **No model swap is justified.** ADR 004 v3.1 has no visual minimum encoded; this run does not propose adding one. Adding a minimum would require a curated "visual-required" gold set first.
+- **No "ColQwen is broken" conclusion.** 1/8 on standalone recall on natural-language questions against slide images is below expectation, but the failure mode (pooled prefilter misses, MaxSim sometimes catches) is consistent with the ColQwen2.5 design and not an obvious bug.
 
-lift_pp        = (pass_rate(with_visual) - pass_rate(without_visual)) * 100
-```
+## What would make the next visual eval more informative
 
-`without_visual` is identical to the `rrf_4ch` channel measured in bakeoff #1. Lift answers: "does adding the visual channel help on examples where visual signal is hypothesized to matter?" This is what justifies keeping ColQwen in the production loop at all.
+1. **Curate visual-required gold.** Questions where the answer is on the slide and NOT in the transcript (e.g. specific numbers / labels visible in a diagram that the speaker does not quote verbatim). On a visual-required gold set, `without_visual` would drop below 1.0 and `lift` would have measurable signal.
+2. **Tune resolution / encoder config.** ADR 005 flagged the ColQwen processor `min_pixels` / `max_pixels` band as unverified. A 720p capture might be downsampled past slide-text legibility. Print the actual band and verify against the captured PNG dimensions before drawing strong conclusions from these numbers.
+3. **Per-channel rank inspection.** When chunk_pass is False, was the gold chunk at rank 6? rank 50? The current eval records the top-5 only. A richer trace (top-20) would distinguish "near miss" from "not found at all" without re-running the whole pipeline.
 
-Lift is small-sample noisy by construction — on a 5-example visual gold a single flip is 20pp. Treat single-digit lift values as inside the noise; treat large negative lift on slide-required modality as a real signal to investigate before claiming visual retrieval is pulling its weight.
-
-## Outputs (when the gate runs)
+## Outputs (this run)
 
 Same eval_runs + eval_results contract as bakeoff #1 (phase-2 hard rule):
 
-- One `eval_runs` row with `code_path = 'visual_eval'`, `embedding_model_id = 'colqwen2.5'`, `summary` carrying `visual_frame_recall_at_k`, `visual_chunk_tr_at_k`, optional `visual_lift`, `per_example` (pass booleans), and the candidate yaml SHA.
-- One `eval_results` row per visual gold example, with `system_output` carrying the gold span + the top-k frames and chunks the runner actually retrieved, and `metrics` carrying the pass booleans (and lift per-example when computed).
-- Writes are wrapped in a single transaction; a mid-loop failure rolls back. (Same atomicity contract as the bakeoff #1 review-fix #2 patch.)
-
-**No winner is locked.** ColQwen2.5 is the only candidate; there is no ADR 004 selection to encode. If a second visual candidate is added in the future, the gate becomes a selection bakeoff (and gets its own MDX at that point).
-
-## Skip semantics
-
-`scripts/run_visual_eval.py` exits **0** with a clear `SKIPPED: ...` line in either of:
+- One `eval_runs` row: `code_path='visual_eval'`, `embedding_model_id='colqwen2.5'` (resolved from yaml, not hardcoded), `summary` carrying per-channel scores, lift, n_examples, per-video substrate counts, candidate yaml SHA.
+- 8 `eval_results` rows: one per visual_gold example with `system_output` (gold span + top-5 frames + top-5 chunks the runner actually retrieved) and `metrics` (pass booleans + lift detail).
+- Writes were transactional (single connection, autocommit off, commit-on-success). Same atomicity contract as bakeoff #1 review-fix #2.
 
 ```
-SKIPPED: visual_gold.jsonl has 0 single_clip examples. ...
-SKIPPED: visual substrate not ingested for visual_gold video_id(s):
-         <video_id>(frames=0,patches=0), ...
+eval/reports/2026-05-27_visual_eval/
+├── methodology.mdx     # this file
+├── summary.json        # full dump of eval_runs.summary
+└── per_example.jsonl   # one row per example with top-5 frame + chunk references
 ```
 
-The first skip remains for future empty-corpus regressions. In the current repo, the expected skip is the per-video substrate message listing the `visual_gold.jsonl` video IDs that lack frame embeddings and patches. The slow integration test (`eval/tests/test_run_visual_eval.py`) asserts the right skip text is emitted and that NO `eval_runs` row leaks during a skip. The fast unit tests (`eval/tests/test_measure_visual.py`) cover the metric primitives with synthetic `FrameResult` / `ChannelResult` / `FusedResult` inputs — those run under `make test` in ~1s.
+## Metrics (definitions, unchanged from the STUB report)
 
-## What it takes to unblock the gate
+### VisualFrameRecall@k
+Pass if any of the top-k frames from `retrieve.visual.retrieve_frames` satisfies `frame.video_id == gold.video_id AND gold.start_sec - tolerance_sec <= frame.frame_sec <= gold.end_sec + tolerance_sec`. Default `tolerance_sec = FRAME_SAMPLE_EVERY_SEC = 10.0`.
 
-1. **Visual gold is already curated.** The 8 accepted examples cover all three dev talks. Keep the `eval/curation/visual_gold_review/2026-05-27/` notes with the corpus rows so future reviewers can inspect the frame evidence. Do not promote rejected transcript-only rows unless a new narrower visual question is created with fresh evidence.
+### VisualChunkTR@k
+Pass if any of the top-k chunks from `retrieve.visual.retrieve` overlaps the gold span (open-interval — `chunk.end_sec > gold.start_sec AND chunk.start_sec < gold.end_sec`).
 
-2. **Ingest MP4 frames + ColQwen patches.** `ingest/frames.py` and the ColQwen patch worker need to run against the source videos (`videos/<video_id>.mp4`, gitignored). Once `frames.pooled_embedding` and `frame_patches` are populated, the substrate check in `run_visual_eval.py` flips from SKIP to RUN automatically.
+### VisualLift@k
+Per-example pass on `rrf({bm25, dense, sparse, multivec, visual}, top_k=5)` vs `rrf({bm25, dense, sparse, multivec}, top_k=5)`, reported as `(with_rate - without_rate) * 100` in percentage points.
 
-3. **Run the gate.** `uv run python -m eval.runners.run_visual_eval` produces the `eval_runs` row + per-example `eval_results` and stdout-reports the metrics. The slow integration test starts asserting against real numbers instead of just the skip path. (A back-compat shim at `scripts/run_visual_eval.py` still works but the canonical entry point is under `eval/runners/` because this module defines an eval run.)
+## Substrate (this run)
 
-## What's deliberately out of scope
+| video_id | pooled frames | frame_patches rows | source |
+|---|---:|---:|---|
+| `nXafozNIk3c` | 318 | 98,580 | full talk (3179s) |
+| `aie_sg_2026_d2_arize_alyx` | 98 | 30,380 | chapter [516, 1494] of `m12vGjfbNlo` via ADR-005 download-sections pattern |
+| `W_CYk2ogcDI` | 113 | 35,030 | full talk (1128s) |
+| **total** | **529** | **163,990** | |
 
-- **No second visual candidate yet.** Adding `gemini-embedding-2-singlevec` to a real bakeoff is a possible future amendment; today it lives in the YAML only as a baseline reference for the writeup.
-- **No bakeoff #2 (generator + judge) interaction.** This gate measures retrieval. Faithfulness on visual-required examples is a downstream concern for bakeoff #2's generator + judge.
-- **No `test_gold` consumption.** As with bakeoff #1, only `dev_gold` (here: `visual_gold.jsonl`) informs anything. The locked text `test_gold.jsonl` is untouched.
+Frames sampled at `every_sec=10` per `ingest.frames.sample`. ColQwen patches encoded via `ingest.handlers.embed_frames_handler` (one frame per PGMQ message, drained by `scripts/drain_ingest_queue.py ingest_embed_frames`). Wall time for the ColQwen pass: ~30 min on Mac MPS.
+
+## Reproducibility
+
+```bash
+# 1. Fetch source videos (per ADR-005 download-sections pattern for chapter slices)
+yt-dlp -f 'best[height<=720][ext=mp4]/best[height<=720]/best' \
+       --merge-output-format mp4 \
+       -o videos/ai_engineering_v0/nXafozNIk3c.mp4 \
+       https://www.youtube.com/watch?v=nXafozNIk3c
+yt-dlp -f 'best[height<=720][ext=mp4]/best[height<=720]/best' \
+       --merge-output-format mp4 \
+       -o videos/ai_engineering_v0/W_CYk2ogcDI.mp4 \
+       https://www.youtube.com/watch?v=W_CYk2ogcDI
+yt-dlp -f 'best[height<=720][ext=mp4]/best[height<=720]/best' \
+       --download-sections '*0-1524' --merge-output-format mp4 \
+       -o videos/ai_engineering_v0/m12vGjfbNlo.mp4 \
+       https://www.youtube.com/watch?v=m12vGjfbNlo
+
+# 2. Ingest frames + ColQwen patches (PGMQ pipeline)
+make db-up
+uv run python -m ingest.cli nXafozNIk3c          # already-ingested; this just re-enqueues
+uv run python -m ingest.cli aie_sg_2026_d2_arize_alyx
+uv run python -m ingest.cli W_CYk2ogcDI
+uv run python -m scripts.drain_ingest_queue ingest_frames        # ~2 min
+uv run python -m scripts.drain_ingest_queue ingest_embed_frames  # ~30 min on Mac MPS
+
+# 3. Run the visual eval
+uv run python -m eval.runners.run_visual_eval
+# → visual_eval written: <run_id> (frame_recall@5=0.125, chunk_tr@5=0.125, n=8)
+```
 
 ## File map
 
 ```
 eval/corpora/ai_engineering_v0/
-├── visual_gold.jsonl                # committed verified visual examples (validator enforces
-│                                    # verified:true AND modality intersects
-│                                    # {slide, screen_code, diagram, whiteboard})
+├── visual_gold.jsonl                # 8 verified visual entries (commit 0d646da)
 └── (no draft committed — drafts go under *_gold.draft.jsonl per .gitignore)
 
-eval/curation/visual_gold_review/2026-05-27/
-                                     # contact sheets, frame grabs, audit notes, and
-                                     # proposed rows used to verify transcript/frame sync
-
 eval/runners/measure_visual.py       # metric primitives + measure_visual()
-eval/runners/run_visual_eval.py      # canonical runner: load → per-video substrate
-                                     # check → measure → eval_runs + eval_results
-                                     # (transactional). Resolves the candidate id
-                                     # from candidates.visual_retrieval.options.
+eval/runners/run_visual_eval.py      # canonical runner; eval_runs + eval_results writer
 scripts/run_visual_eval.py           # back-compat shim → eval.runners.run_visual_eval.main
+scripts/drain_ingest_queue.py        # operational driver for PGMQ workers
 
-eval/tests/test_measure_visual.py    # fast unit tests for metric primitives + lift +
-                                     # candidate resolver + shim-delegation guard
-eval/tests/test_run_visual_eval.py   # slow integration tests: live-DB skip-or-run
-                                     # + per-video substrate regression on a test DB
+eval/tests/test_measure_visual.py    # fast unit tests for metric primitives + lift
+eval/tests/test_run_visual_eval.py   # slow integration tests (live-DB + per-video substrate)
 
-eval/reports/2026-05-27_visual_eval/methodology.mdx  # this file
+eval/curation/visual_gold_review/2026-05-27/  # per-talk frame evidence for the 8 verified entries
+docs/decisions/005-chapter-slice-ingest.md    # ADR for chapter-slice video capture
+eval/reports/2026-05-27_visual_eval/methodology.mdx  # this file (RUN, not STUB)
 ```

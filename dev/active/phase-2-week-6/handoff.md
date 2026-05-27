@@ -22,14 +22,31 @@ Vector-best = **1.00** ≥ 0.75 minimum. `bge-m3-all-channels` cleared on the fi
 
 The single `rrf_4ch` failure is `sally-staying-on-task-attention` — dense and multivec both put the gold chunk in their top-5, but BM25's contributions to the fused list pushed it past rank 5. Likely a small-corpus RRF artifact; revisit at v1 scale before tuning `RRF_K`.
 
-## Outcome — Visual retrieval eval (separate gate, STUB)
+## Outcome — Visual retrieval eval (separate gate, FIRST REAL RUN)
+
+ColQwen2.5 visual retrieval ran end-to-end against 8 verified visual_gold examples on 529 ingested frames (~310 patches each) across the 3 talks. Run id `visual-eval-3d5384cd6446` (`code_path='visual_eval'`).
+
+| Metric | Value | Counts |
+|---|---:|---|
+| `VisualFrameRecall@5` | **0.125** | 1/8 |
+| `VisualChunkTR@5` | **0.125** | 1/8 |
+| `VisualLift@5` (5-ch w/ visual vs 4-ch text-only) | **0.0 pp** | with: 8/8 · without: 8/8 |
+
+Headline reading: visual lift is 0 pp **but the test is pinned by construction** — bakeoff #1's 4-channel text RRF already passes 8/8 on these examples, so this corpus cannot measure whether the visual channel rescues text-failure cases. Standalone visual recall (1/8 frame, 1/8 chunk) is below expectation; ADR 005 already flagged the ColQwen processor `min_pixels` / `max_pixels` band as unverified, which may be one cause. Full analysis + per-example breakdown + reproducibility commands in `eval/reports/2026-05-27_visual_eval/methodology.mdx`. **No model swap is justified by this run** — ADR 004 v3.1 has no visual minimum encoded, and removing ColQwen on text-saturated lift would be a methodology mistake.
+
+Substrate that made the run possible:
+
+- 3 source MP4s downloaded under `videos/ai_engineering_v0/` (gitignored). `m12vGjfbNlo.mp4` (parent of the Arize chapter) used the ADR 005 `--download-sections '*0-1500'` pattern → 39 MB instead of the projected 5–15 GB full-stream.
+- 529 frames sampled at every_sec=10 via `frames_handler` (318 + 113 + 98 per talk).
+- 163,990 frame_patches encoded by `embed_frames_handler` via ColQwen2.5 (~30 min Mac MPS).
+- `scripts/drain_ingest_queue.py` ran both PGMQ queues end-to-end. Single-driver pattern documented in commit `d5b4bb6`.
 
 ColQwen2.5 is the 5th retrieval channel in production but was **not** measured by bakeoff #1 — the embeddings minimum in ADR 004 v3.1 is text-channel-only and the visual candidate set has no quality minimum encoded yet. A dedicated eval gate landed this session with `code_path = 'visual_eval'`:
 
 - **Metrics:** `VisualFrameRecall@k` (frame timestamp ± frame-sample cadence), `VisualChunkTR@k` (open-interval overlap, same convention as text), `VisualLift@k` (5-ch RRF with visual vs 4-ch RRF without visual). Definitions and rationale in `eval/reports/2026-05-27_visual_eval/methodology.mdx`.
 - **Status today:** substrate-blocked STUB. `visual_gold.jsonl` now has 8 verified examples curated from all 10 `dev_gold.jsonl` single-clip rows; 2 transcript-only rows were rejected. The runner still skips with a clear per-video message because `frames` / `frame_patches` are empty for the referenced videos (no MP4 + ColQwen patch ingest run yet). The test asserts the skip text so the gate cannot silently rot.
 - **Atomicity:** Same eval_runs + eval_results transactional contract as bakeoff #1 (review-fix #2 patch). No winner is locked — ColQwen2.5 is the only candidate.
-- **Unblock path:** stage the referenced source MP4s under `videos/ai_engineering_v0/`, run MP4 frame ingest + ColQwen patch worker for every `visual_gold.jsonl` video_id, then `uv run python -m eval.runners.run_visual_eval`. (A back-compat shim under `scripts/run_visual_eval.py` still works; the canonical path lives under `eval/runners/` because the runner defines an eval run and writes `eval_runs` / `eval_results`.)
+- **Unblock path completed this session.** Gold + substrate + first real run all landed. Future ColQwen runs follow the same path: drain `ingest_frames` → drain `ingest_embed_frames` → `python -m eval.runners.run_visual_eval`. A back-compat shim under `scripts/run_visual_eval.py` still works; the canonical path lives under `eval/runners/` because the runner defines an eval run and writes `eval_runs` / `eval_results`.
 - **Substrate readiness is per-video, not global.** The runner checks `frames.pooled_embedding > 0 AND frame_patches > 0` for each `video_id` referenced by `visual_gold.jsonl`; frames for unrelated talks do NOT count. Skip text lists the missing video_ids.
 - **visual_gold modality enforced.** Both the loader (`measure_visual.load_visual_gold`) and the validator (`eval/validate.py`) reject `visual_gold.jsonl` entries whose `modality` does not intersect `{slide, screen_code, diagram, whiteboard}` — transcript-only rows belong in `dev_gold.jsonl`, not here.
 - **Candidate id resolved from yaml.** `eval/runners/run_visual_eval.py::resolve_visual_candidate_id` reads `candidates.visual_retrieval.options`, filters to `provider == 'local'`, and requires exactly one match — no hard-coded `colqwen2.5` string.

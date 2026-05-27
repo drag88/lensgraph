@@ -1,0 +1,68 @@
+{
+  "run_id": "visual-eval-3d5384cd6446",
+  "run_date": "2026-05-27",
+  "code_path": "visual_eval",
+  "embedding_model_id": "colqwen2.5",
+  "k": 5,
+  "component": "visual_retrieval",
+  "n_examples": 8,
+  "per_example": {
+    "visual-tengyu-library-analogy-slide": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-tengyu-retrieval-accuracy-plot": {
+      "chunk_pass": true,
+      "frame_pass": false
+    },
+    "visual-sally-large-json-composable-tools": {
+      "chunk_pass": false,
+      "frame_pass": true
+    },
+    "visual-tengyu-matryoshka-quantization-slide": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-google-agent-cli-getting-started-screen": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-sally-planning-tools-states-finish-gate": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-tengyu-query-document-enhancement-slide": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-google-adk2-resume-stopped-agents-screen": {
+      "chunk_pass": false,
+      "frame_pass": false
+    }
+  },
+  "visual_lift": {
+    "lift_pp": 0.0,
+    "with_visual_pass_rate": 1.0,
+    "without_visual_pass_rate": 1.0
+  },
+  "candidate_id": "colqwen2.5",
+  "measurement_mode": "real_visual_gold_sweep",
+  "frame_tolerance_sec": 10.0,
+  "substrate_per_video": {
+    "W_CYk2ogcDI": {
+      "patches": 35030,
+      "pooled_frames": 113
+    },
+    "nXafozNIk3c": {
+      "patches": 98580,
+      "pooled_frames": 318
+    },
+    "aie_sg_2026_d2_arize_alyx": {
+      "patches": 30380,
+      "pooled_frames": 98
+    }
+  },
+  "visual_chunk_tr_at_k": 0.125,
+  "visual_frame_recall_at_k": 0.125,
+  "candidate_set_yaml_sha256": "f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1"
+}
