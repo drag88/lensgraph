@@ -1,0 +1,94 @@
+{
+  "run_id": "embeddings-bakeoff-81850d46865a",
+  "run_date": "2026-05-27",
+  "code_path": "embeddings_bakeoff",
+  "embedding_model_id": "bge-m3-all-channels",
+  "component": "text_embeddings",
+  "n_examples": 10,
+  "per_example": {
+    "google-adk2-resume-agents": {
+      "dense": true,
+      "sparse": false,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "tengyu-rag-library-analogy": {
+      "dense": true,
+      "sparse": true,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "tengyu-two-reasons-to-chunk": {
+      "dense": true,
+      "sparse": false,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "sally-staying-on-task-attention": {
+      "dense": true,
+      "sparse": false,
+      "rrf_4ch": false,
+      "multivec": true
+    },
+    "google-cli-what-it-is-and-install": {
+      "dense": true,
+      "sparse": true,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "tengyu-matryoshka-and-quantization": {
+      "dense": true,
+      "sparse": true,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "tengyu-retrieval-accuracy-headroom": {
+      "dense": true,
+      "sparse": true,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "sally-large-json-and-composable-tools": {
+      "dense": true,
+      "sparse": true,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "sally-planning-tools-states-finish-gate": {
+      "dense": true,
+      "sparse": true,
+      "rrf_4ch": true,
+      "multivec": true
+    },
+    "tengyu-techniques-beyond-better-embeddings": {
+      "dense": true,
+      "sparse": true,
+      "rrf_4ch": true,
+      "multivec": true
+    }
+  },
+  "leader_score": 1.0,
+  "measurements": [
+    {
+      "score": 1.0,
+      "candidate_id": "bge-m3-all-channels",
+      "meets_minimums": true,
+      "price_per_mtok_usd": 0.0
+    }
+  ],
+  "tie_break_pp": 3.0,
+  "winner_score": 1.0,
+  "winner_locked": true,
+  "meets_minimums": true,
+  "measurement_mode": "real_dev_gold_sweep",
+  "vector_best_score": 1.0,
+  "per_channel_tr_at_5": {
+    "dense": 1.0,
+    "sparse": 0.7,
+    "rrf_4ch": 0.9,
+    "multivec": 1.0
+  },
+  "winner_candidate_id": "bge-m3-all-channels",
+  "embeddings_min_threshold": 0.75,
+  "candidate_set_yaml_sha256": "f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1"
+}

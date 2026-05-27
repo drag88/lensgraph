@@ -1,0 +1,142 @@
+# Bakeoff #1 — Text Embeddings
+
+**Run date:** 2026-05-27
+**Run ID:** `embeddings-bakeoff-81850d46865a`
+**Code path:** `embeddings_bakeoff`
+**Component:** `text_embeddings`
+**Outcome:** ✅ `bge-m3-all-channels` **locked**. Vector-best TR@5 = 1.00 ≥ 0.75 minimum.
+
+## TL;DR
+
+BGE-M3 cleared the embeddings minimum (`timestamp_recall_at_5_vector_only_min` = 0.75) on the first measurement against `eval/corpora/ai_engineering_v0/dev_gold.jsonl`. Both the dense and multi-vector channels returned perfect TR@5 across all 10 single_clip examples; sparse alone fell to 0.70 (below the per-channel minimum) but the rule is "best of vector channels" and the dense + multivec channels carry it well over. RRF fusion across BM25 + the three BGE-M3 channels landed at 0.90 — one example (`sally-staying-on-task-attention`) where BM25 noise dragged the fused top-5 off the gold span even though dense and multivec individually nailed it. Worth a note for chunking ablation week; not a blocker here.
+
+The one candidate with a complete substrate today is `bge-m3-all-channels`. Voyage and Gemini Embedding 2 are fallbacks under ADR 004 v3.1, gated on BGE-M3 failing the minimum. They did not fail, so no ADR amendment is required and no API spend was triggered.
+
+## Selection rule applied (ADR 004 v3.1)
+
+```
+For component = text_embeddings:
+  candidates = { bge-m3-all-channels }
+  minimums   = { timestamp_recall_at_5_vector_only_min: 0.75 }
+  tie_break_pp = 3
+
+  dev_score(bge-m3-all-channels) = max(dense, sparse, multivec) = 1.00
+  meets_minimums = 1.00 >= 0.75  →  True
+  qualifying = { bge-m3-all-channels }
+  chosen     = cheapest in qualifying = bge-m3-all-channels  ($0/Mtok, local)
+```
+
+`test_gold.jsonl` was not consulted (per ADR 004 v3.1 and `docs/eval-methodology.md`: the test set is reserved for the final phase-4 writeup). `synthesis.jsonl` was loaded for completeness but not blended into the TR@5 average — the methodology rule reports synthesis separately.
+
+## Per-channel TR@5 (n = 10 single_clip dev_gold examples)
+
+| Channel | TR@5 | Counts toward vector-only minimum? |
+|---|---:|---|
+| `dense` (pgvector HNSW cosine, 1024-d) | **1.00** | ✅ |
+| `sparse` (pgvector sparsevec inner product) | 0.70 | ✅ (best-of) |
+| `multivec` (per-token + MaxSim) | **1.00** | ✅ |
+| `rrf_4ch` (BM25 + dense + sparse + multivec via RRF) | 0.90 | ❌ (blends BM25) |
+
+Vector-best score: **1.00**. Embeddings minimum (`>= 0.75`): **MET**.
+
+## Per-example breakdown
+
+| Example | dense | sparse | multivec | rrf_4ch |
+|---|:---:|:---:|:---:|:---:|
+| `tengyu-rag-library-analogy` | ✓ | ✓ | ✓ | ✓ |
+| `tengyu-retrieval-accuracy-headroom` | ✓ | ✓ | ✓ | ✓ |
+| `tengyu-matryoshka-and-quantization` | ✓ | ✓ | ✓ | ✓ |
+| `tengyu-two-reasons-to-chunk` | ✓ | ✗ | ✓ | ✓ |
+| `tengyu-techniques-beyond-better-embeddings` | ✓ | ✓ | ✓ | ✓ |
+| `sally-large-json-and-composable-tools` | ✓ | ✓ | ✓ | ✓ |
+| `sally-planning-tools-states-finish-gate` | ✓ | ✓ | ✓ | ✓ |
+| `sally-staying-on-task-attention` | ✓ | ✗ | ✓ | ✗ |
+| `google-cli-what-it-is-and-install` | ✓ | ✓ | ✓ | ✓ |
+| `google-adk2-resume-agents` | ✓ | ✗ | ✓ | ✓ |
+
+Sparse alone misses three of the ten examples — questions that lean on conceptual rather than lexical overlap with the chunk text. Dense and multivec close those gaps individually. The single `rrf_4ch` failure on `sally-staying-on-task-attention` is the case worth pulling apart in the chunking ablation: dense and multivec both placed the gold chunk in the top-5, but the fused list pushed it below rank 5 — BM25 contributed alternative chunks that dominated rank positions. Likely a small-corpus artifact of RRF's rank-only weighting; revisit at v1 corpus scale before tuning `RRF_K`.
+
+## Cost differential vs. the API fallbacks
+
+Voyage and Gemini Embedding 2 were not run. Their nominal cost at the current corpus (212 chunks ingested across 3 talks; approximate text payload 212 chunks × ~500 tokens ≈ 106k tokens) and projected v1 corpus (50 talks × ~70 chunks × ~500 tokens ≈ 1.75M tokens):
+
+| Candidate | $/Mtok | Cost @ v0 (~106k tok) | Cost @ v1 (~1.75M tok) | Channels |
+|---|---:|---:|---:|---|
+| `bge-m3-all-channels` (local) | 0.00 | $0.00 | $0.00 | dense + sparse + multi-vector |
+| `voyage-3-large` | 0.18 | $0.02 | $0.32 | dense only |
+| `gemini-embedding-2` | 0.15 | $0.02 | $0.26 | dense only |
+
+The corpus is small enough that the API alternatives are also cheap in absolute terms; the meaningful saving is in iteration. BGE-M3 is re-runnable for free during chunking experiments (bakeoff #3, weeks 7–8), where re-embedding the full corpus per strategy × 5 strategies × any chunk-size sweep gets expensive on an API. Plus: BGE-M3 ships three channels for one inference call; the fallbacks would force a dense-only stack and lose the multivec + sparse signal entirely.
+
+## Reproducibility
+
+```bash
+# Pre-conditions: 3 talks ingested into the lensgraph DB
+# (212 chunks · 212 dense_embeds · 212 sparse_embeds · 73,621 chunk_token_embeds)
+make db-up
+
+# Run the bakeoff
+uv run python -m scripts.run_embeddings_bakeoff
+# → locked text_embeddings winner: bge-m3-all-channels (embeddings-bakeoff-<id>)
+
+# Inspect the locked row
+psql lensgraph -c "
+  SELECT summary->>'winner_candidate_id',
+         summary->'per_channel_tr_at_5',
+         summary->>'vector_best_score',
+         summary->>'embeddings_min_threshold'
+    FROM eval_runs
+   WHERE summary->>'winner_locked' = 'true'
+     AND summary->>'component' = 'text_embeddings'
+   ORDER BY created_at DESC LIMIT 1;
+"
+```
+
+## Inputs
+
+- **Candidate yaml SHA256:** `f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1`
+  (file: `eval/config/model_candidates.yaml`, `last_updated: 2026-05-27`)
+- **dev_gold:** `eval/corpora/ai_engineering_v0/dev_gold.jsonl` (10 verified single_clip examples)
+- **Synthesis (reported separately, not blended):** `eval/corpora/ai_engineering_v0/synthesis.jsonl` (1 example)
+- **`test_gold`:** *not consulted.* Reserved for phase-4 writeup per ADR 004 v3.1.
+- **Code paths:** `scripts/run_embeddings_bakeoff.py` → `eval/runners/measure_embeddings.py` → `retrieve/{dense,sparse,multivec,bm25,rrf}.py`
+
+## TR@5 definition
+
+For an example with gold span `[s, e]` on `video_id = V`, a channel `passes@5` if any top-5 retrieved chunk satisfies:
+
+```
+chunk.video_id == V
+AND chunk.start_sec < e
+AND chunk.end_sec   > s          # open-interval overlap, not full containment
+```
+
+`TR@5 = passes / total`. The "vector channel only" minimum in ADR 004 v3.1 is interpreted as `max(dense, sparse, multivec)` — the best-of vector channels, not their mean. RRF is reported but blends BM25 and therefore does not count toward the vector-only minimum.
+
+## Runner-up
+
+None — `bge-m3-all-channels` is the only candidate with a complete substrate today. If a future BGE-M3 variant or a re-promoted Voyage/Gemini is added, the selection rule applies as written: cheapest within 3pp of the leader, all minimums met.
+
+## What this measurement does NOT tell us
+
+- **Generator/judge faithfulness.** Bakeoff #2 (week 7) runs `ClaimsSupported`, `CitationAccuracy`, and judge–human Cohen's kappa. Embeddings recall is necessary but not sufficient for end-to-end faithfulness.
+- **Reranker lift.** Bakeoff #1 measures pre-rerank channels only. `bge-reranker-v2-m3` is in the loop in production (`retrieve/rerank.py`) but its `Recall@3` lift is its own minimum (`recall_at_3_lift_pp_min: 5.0`) and is measured separately when the reranker bakeoff lands.
+- **Visual channel.** No `.mp4` files staged, so `frames` / `frame_patches` are empty. The visual channel returns `[]` gracefully and is excluded from the text-only embeddings minimum by ADR 004 v3.1.
+- **Behavior at v1 corpus scale.** TR@5 = 1.0 on 10 examples is comfortable headroom but the per-channel gap between sparse (0.70) and dense (1.00) suggests sparse may be the first to break at larger corpus / harder questions. Worth watching in week-8 chunking ablation.
+
+## Decision
+
+`bge-m3-all-channels` is **locked** as the text embeddings winner. Production ingest can read the lock via:
+
+```python
+db.repos.eval_runs.load_bakeoff_winner(
+    conn,
+    component='text_embeddings',
+    code_path='embeddings_bakeoff',     # canonical per design §5 + a1fa1dd
+)
+# → 'bge-m3-all-channels'
+```
+
+No ADR amendment required. Mission 2 (Voyage / Gemini promotion) does not fire.
+
+Next: bakeoff #2 (generator + judge) — week 7. Out of scope for this session.

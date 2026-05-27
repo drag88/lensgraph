@@ -110,3 +110,91 @@ def test_lock_writes_winner_locked_true_row(test_db, tmp_path, monkeypatch):
     code_path, summary = row
     assert code_path == "embeddings_bakeoff"
     assert summary["winner_candidate_id"] == "bge-m3-all-channels"
+
+
+def test_real_measurements_against_dev_gold():
+    """Phase-2 contract: invoking the script with NO ``--measurements-json``
+    must run a real per-channel TR@5 sweep against the live DB's dev_gold
+    corpus, write the per-channel floats into ``eval_runs.summary``, and
+    lock ``bge-m3-all-channels`` iff the embeddings minimum
+    (``timestamp_recall_at_5_vector_only_min`` = 0.75 in the candidates yaml)
+    is met on the best-of vector channels.
+
+    This test runs against the LIVE ``lensgraph`` DB because the real sweep
+    needs ingested chunks + embeds. It captures the run_ids the subprocess
+    appends and deletes them at the end so re-runs are idempotent.
+    """
+    live_dsn = resolve_dsn()
+
+    def _emb_run_ids() -> set[str]:
+        with psycopg.connect(live_dsn, autocommit=True) as c:
+            rows = c.execute(
+                "SELECT run_id FROM eval_runs WHERE code_path = 'embeddings_bakeoff'",
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    before = _emb_run_ids()
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.run_embeddings_bakeoff"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    # We assert on the row regardless of exit code: a failing-minimum run
+    # still writes a row (per Mission 2 contingency) but exits non-zero so
+    # downstream `&&` chains know not to promote the embedder.
+    new_ids = _emb_run_ids() - before
+    try:
+        assert len(new_ids) == 1, (
+            f"expected exactly one new embeddings_bakeoff row, got {new_ids}; "
+            f"stdout={proc.stdout}\nstderr={proc.stderr}"
+        )
+        run_id = next(iter(new_ids))
+
+        with psycopg.connect(live_dsn, autocommit=True) as c:
+            row = c.execute(
+                "SELECT code_path, summary FROM eval_runs WHERE run_id = %s",
+                (run_id,),
+            ).fetchone()
+        assert row is not None
+        code_path, summary = row
+        assert code_path == "embeddings_bakeoff"
+
+        # Real per-channel TR@5 numbers (NOT the synthetic stub).
+        per_channel = summary.get("per_channel_tr_at_5")
+        assert isinstance(per_channel, dict), f"missing per_channel_tr_at_5: {summary}"
+        for channel in ("dense", "sparse", "multivec", "rrf_4ch"):
+            assert channel in per_channel, f"missing channel {channel}: {per_channel}"
+            score = per_channel[channel]
+            assert isinstance(score, (int, float)) and 0.0 <= float(score) <= 1.0, (
+                f"channel {channel} score out of range: {score}"
+            )
+
+        # Selection rule: best of dense/sparse/multivec vs the yaml minimum.
+        vector_best = max(per_channel["dense"], per_channel["sparse"], per_channel["multivec"])
+        min_threshold = float(summary.get("embeddings_min_threshold", 0.75))
+        if vector_best >= min_threshold:
+            assert summary.get("winner_locked") is True, (
+                f"min met ({vector_best:.3f} >= {min_threshold}) but winner_locked != True"
+            )
+            assert summary.get("component") == "text_embeddings"
+            assert summary.get("winner_candidate_id") == "bge-m3-all-channels"
+            assert proc.returncode == 0, (
+                f"min met but exit != 0\nstdout={proc.stdout}\nstderr={proc.stderr}"
+            )
+        else:
+            assert summary.get("winner_locked") is not True, (
+                f"min FAILED ({vector_best:.3f} < {min_threshold}) but row was locked anyway"
+            )
+            assert proc.returncode != 0, (
+                "min FAILED but exit was 0 — caller would think the lock succeeded"
+            )
+    finally:
+        if new_ids:
+            with psycopg.connect(live_dsn, autocommit=True) as c:
+                c.execute(
+                    "DELETE FROM eval_runs WHERE run_id = ANY(%s)",
+                    (list(new_ids),),
+                )

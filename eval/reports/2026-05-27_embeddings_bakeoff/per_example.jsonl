@@ -1,0 +1,10 @@
+{"example_id": "google-adk2-resume-agents", "per_channel_pass_at_5": {"dense": true, "sparse": false, "rrf_4ch": true, "multivec": true}}
+{"example_id": "google-cli-what-it-is-and-install", "per_channel_pass_at_5": {"dense": true, "sparse": true, "rrf_4ch": true, "multivec": true}}
+{"example_id": "sally-large-json-and-composable-tools", "per_channel_pass_at_5": {"dense": true, "sparse": true, "rrf_4ch": true, "multivec": true}}
+{"example_id": "sally-planning-tools-states-finish-gate", "per_channel_pass_at_5": {"dense": true, "sparse": true, "rrf_4ch": true, "multivec": true}}
+{"example_id": "sally-staying-on-task-attention", "per_channel_pass_at_5": {"dense": true, "sparse": false, "rrf_4ch": false, "multivec": true}}
+{"example_id": "tengyu-matryoshka-and-quantization", "per_channel_pass_at_5": {"dense": true, "sparse": true, "rrf_4ch": true, "multivec": true}}
+{"example_id": "tengyu-rag-library-analogy", "per_channel_pass_at_5": {"dense": true, "sparse": true, "rrf_4ch": true, "multivec": true}}
+{"example_id": "tengyu-retrieval-accuracy-headroom", "per_channel_pass_at_5": {"dense": true, "sparse": true, "rrf_4ch": true, "multivec": true}}
+{"example_id": "tengyu-techniques-beyond-better-embeddings", "per_channel_pass_at_5": {"dense": true, "sparse": true, "rrf_4ch": true, "multivec": true}}
+{"example_id": "tengyu-two-reasons-to-chunk", "per_channel_pass_at_5": {"dense": true, "sparse": false, "rrf_4ch": true, "multivec": true}}
