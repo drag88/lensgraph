@@ -1,8 +1,8 @@
 # Handoff — Phase 2 Week 6 (Bakeoff #1: text embeddings) — CLOSED
 
 **Opened:** 2026-05-27 (phase-1 week-5 closed at `8d6694a`)
-**Closed:** 2026-05-27 — bakeoff #1 locked, all gates green; visual eval scaffolded and visual gold curated.
-**Status:** ✅ Bakeoff #1 (text embeddings) shipped. `bge-m3-all-channels` locked as the text-embeddings winner. Best-of vector channel TR@5 = 1.00 against the ADR 004 v3.1 minimum (≥ 0.75). No ADR amendment required. ⚪ Visual retrieval (ColQwen2.5 — the 5th channel) has its own eval gate (`eval_runs.code_path = 'visual_eval'`) — infrastructure landed and 8 verified visual gold rows now exist; the gate is still substrate-blocked until MP4 frames + ColQwen patches are ingested. Bakeoff #1 did NOT measure or lock visual retrieval.
+**Closed:** 2026-05-27 — bakeoff #1 locked, visual eval scaffold + first real run shipped.
+**Status:** ✅ Bakeoff #1 (text embeddings) shipped. `bge-m3-all-channels` locked as the text-embeddings winner. Best-of vector channel TR@5 = 1.00 against the ADR 004 v3.1 minimum (≥ 0.75). No ADR amendment required. ✅ Visual retrieval (ColQwen2.5 — the 5th channel) has its own eval gate (`eval_runs.code_path = 'visual_eval'`) — infrastructure landed, 8 verified visual gold rows curated, and a FIRST REAL RUN landed at `visual-eval-3d5384cd6446`: VisualFrameRecall@5=0.125, VisualChunkTR@5=0.125, VisualLift@5=0.0 pp (lift is pinned-by-construction because text RRF saturates at 8/8 on this corpus). Bakeoff #1 did NOT measure or lock visual retrieval.
 **Authoritative design:** `docs/phase-1-design.md` rev 4 (commit `e950583`) — still the contract.
 **Prior handoff:** `dev/active/phase-1-week-5/handoff.md` (CLOSED week 5).
 **Next:** Bakeoff #2 (generator + judge) — week 7, **not started**. Out of scope for this handoff.
@@ -44,7 +44,7 @@ Substrate that made the run possible:
 ColQwen2.5 is the 5th retrieval channel in production but was **not** measured by bakeoff #1 — the embeddings minimum in ADR 004 v3.1 is text-channel-only and the visual candidate set has no quality minimum encoded yet. A dedicated eval gate landed this session with `code_path = 'visual_eval'`:
 
 - **Metrics:** `VisualFrameRecall@k` (frame timestamp ± frame-sample cadence), `VisualChunkTR@k` (open-interval overlap, same convention as text), `VisualLift@k` (5-ch RRF with visual vs 4-ch RRF without visual). Definitions and rationale in `eval/reports/2026-05-27_visual_eval/methodology.mdx`.
-- **Status today:** substrate-blocked STUB. `visual_gold.jsonl` now has 8 verified examples curated from all 10 `dev_gold.jsonl` single-clip rows; 2 transcript-only rows were rejected. The runner still skips with a clear per-video message because `frames` / `frame_patches` are empty for the referenced videos (no MP4 + ColQwen patch ingest run yet). The test asserts the skip text so the gate cannot silently rot.
+- **Status today:** REAL RUN. `visual_gold.jsonl` has 8 verified examples curated from all 10 `dev_gold.jsonl` single-clip rows; 2 transcript-only rows were rejected. The first end-to-end run wrote `eval_runs` row `visual-eval-3d5384cd6446` + 8 `eval_results` rows after 529 frames + 163,990 ColQwen patches were ingested (~30 min Mac MPS via `scripts/drain_ingest_queue.py`). Numbers above; full analysis in the methodology MDX. The runner still has a working skip path for missing substrate (asserted by the slow integration test), so the gate cannot silently regress if a future video_id lands without ingest.
 - **Atomicity:** Same eval_runs + eval_results transactional contract as bakeoff #1 (review-fix #2 patch). No winner is locked — ColQwen2.5 is the only candidate.
 - **Unblock path completed this session.** Gold + substrate + first real run all landed. Future ColQwen runs follow the same path: drain `ingest_frames` → drain `ingest_embed_frames` → `python -m eval.runners.run_visual_eval`. A back-compat shim under `scripts/run_visual_eval.py` still works; the canonical path lives under `eval/runners/` because the runner defines an eval run and writes `eval_runs` / `eval_results`.
 - **Substrate readiness is per-video, not global.** The runner checks `frames.pooled_embedding > 0 AND frame_patches > 0` for each `video_id` referenced by `visual_gold.jsonl`; frames for unrelated talks do NOT count. Skip text lists the missing video_ids.
@@ -56,6 +56,10 @@ ColQwen2.5 is the 5th retrieval channel in production but was **not** measured b
 ## Where we are at HEAD
 
 ```
+ec7b5b7 eval(visual): first real visual_eval run — frame_recall@5=0.125, chunk_tr@5=0.125, lift=0pp (text-saturated)
+d5b4bb6 docs(adr-005)+scripts: chapter-slice video capture pattern + ingest queue drain
+0d646da eval(visual): curate 8 verified visual_gold rows + frame evidence (review-approved)
+d20c024 eval(visual): review fixes #3 — per-video substrate, modality, candidate id from yaml, runner relocation
 d28307d eval(visual): scaffold visual retrieval eval gate (separate from bakeoff #1)
 751c14f eval(bakeoff): bakeoff #1 review fixes #2 — close json loophole, atomic writes, handoff hash
 21d2b93 eval(bakeoff): bakeoff #1 review fixes — eval_results writes + handoff closeout
@@ -66,21 +70,23 @@ a1fa1dd fix(generate,db): cite bounds-check answer_claim_index + load_bakeoff_wi
 a37f9b6 docs(handoff): close phase-1 week-5 — slice 3 shipped, EXIT GATE passed, step 35 unlocks phase 2
 ```
 
-Further review-fix commits may sit on top of `d28307d` (per-video substrate +
-visual-modality enforcement + candidate-resolver + runner-relocation under
-`eval/runners/`). Check `git log --oneline` if the handoff seems out of date.
+Further review-fix commits may sit on top of `ec7b5b7` (handoff refresh,
+ADR 005 consistency fixes, visual-required curation pass). Check
+`git log --oneline` if the handoff seems out of date.
 
-### Gates green after visual-gold curation
+### Gates green after the first real visual_eval run
 
 ```
 make validate-evals-strict   OK (0 warnings)
 make phase0-gate             OK (19/3 across 3 talks)
 make test                    OK (107 fast tests — adds 16 visual + 7 review-fix tests)
 make lint                    OK
-uv run python -m eval.runners.run_visual_eval --dry-run
-                             OK (SKIPPED: missing visual substrate for 3 video_ids; 8 examples present)
-uv run pytest -m slow eval/tests/test_run_visual_eval.py -q
-                             OK (2 targeted slow tests)
+uv run python -m eval.runners.run_visual_eval
+                             OK (frame_recall@5=0.125, chunk_tr@5=0.125, n=8 → run_id visual-eval-3d5384cd6446)
+uv run pytest -m slow eval/tests/test_run_visual_eval.py \
+                       eval/tests/test_run_embeddings_bakeoff.py
+                             OK (6 targeted slow tests, ~8:41 warm; visual eval test runs the happy path
+                             including a fresh ColQwen pass + self-cleans via CASCADE)
 ```
 
 ### Locked-winner DB contract
@@ -123,13 +129,18 @@ eval/reports/2026-05-27_embeddings_bakeoff/
 └── per_example.jsonl   # one row per dev_gold example with per-channel pass@5
 
 eval/reports/2026-05-27_visual_eval/
-└── methodology.mdx     # STUB: visual eval gate spec, metrics, skip semantics, unblock path
+├── methodology.mdx     # REAL RUN: per-channel + lift numbers, per-example analysis, reproducibility
+├── summary.json        # full dump of eval_runs.summary for run_id visual-eval-3d5384cd6446
+└── per_example.jsonl   # one row per visual gold example with top-5 frames + chunks
 
 eval/curation/visual_gold_review/2026-05-27/
 └── README.md           # visual-gold curation notes plus contact sheets/frame evidence
+
+docs/decisions/005-chapter-slice-ingest.md  # ADR for chapter-slice video capture
+scripts/drain_ingest_queue.py               # operational driver for PGMQ workers
 ```
 
-The bakeoff #1 `methodology.mdx` is the resume-grade writeup for text embeddings. The visual eval MDX is a stub — it will earn its row in the resume once the substrate + gold are populated and the runner produces real numbers.
+The bakeoff #1 `methodology.mdx` is the resume-grade writeup for text embeddings. The visual eval MDX is the REAL-RUN writeup as of `ec7b5b7`: standalone visual recall is weak (1/8 on both metrics), lift is 0 pp but pinned by construction (text channels saturate), and the writeup is explicit that no model swap is justified.
 
 ---
 
@@ -144,7 +155,7 @@ The bakeoff #1 `methodology.mdx` is the resume-grade writeup for text embeddings
 | `eval/tests/test_run_embeddings_bakeoff.py` | Slow tests: real-sweep contract, lock contract, legacy-shape rejection, mid-loop failure rollback. Self-cleaning via CASCADE on `eval_runs` delete. |
 | `eval/reports/2026-05-27_embeddings_bakeoff/` *(new)* | `methodology.mdx`, `summary.json`, `per_example.jsonl`. |
 
-### Visual retrieval eval (scaffold + review fix #3)
+### Visual retrieval eval (scaffold → curation → ADR 005 → first real run)
 
 | File | Change |
 |---|---|
@@ -154,11 +165,13 @@ The bakeoff #1 `methodology.mdx` is the resume-grade writeup for text embeddings
 | `scripts/run_visual_eval.py` | Reduced to a back-compat shim that delegates to `eval.runners.run_visual_eval.main`. No duplicated logic. |
 | `eval/validate.py` | Adds `visual_gold.jsonl` to `GOLD_FILES` and enforces visual modality on every committed entry. |
 | `eval/tests/test_measure_visual.py` *(new)* | Fast unit tests: metric primitives, lift math, gold loader (including modality rejection), candidate resolver, shim-delegation guard, validator visual-modality rejection. |
-| `eval/tests/test_run_visual_eval.py` *(new)* | Slow tests: live-DB skip-or-run + per-video substrate regression on a test DB (frames staged for unrelated video, visual_gold points elsewhere → must skip). |
-| `eval/reports/2026-05-27_visual_eval/methodology.mdx` *(new)* | STUB report — what bakeoff #1 did NOT cover, metric definitions, skip semantics, visual-gold curation status, unblock path. |
-| `eval/curation/visual_gold_review/2026-05-27/` *(new)* | Review evidence for all 10 dev single-clip rows: subagent notes, proposed rows, contact sheets, and representative frame grabs. Raw `.mp4` review clips are ignored. |
+| `eval/tests/test_run_visual_eval.py` *(new)* | Slow tests: live-DB skip-or-run + per-video substrate regression on a test DB. Now exercises the happy path (substrate ingested) end-to-end. |
+| `eval/curation/visual_gold_review/2026-05-27/` *(new, commit `0d646da`)* | Curation evidence for all 10 dev single-clip rows: subagent notes, proposed rows, contact sheets, and representative frame grabs. Raw `.mp4` review clips are ignored. |
+| `docs/decisions/005-chapter-slice-ingest.md` *(new, commit `d5b4bb6`)* | ADR for `yt-dlp --download-sections '*0-<max(end)+30>'` chapter-slice capture pattern. Preserves source t=0; no code/schema change. |
+| `scripts/drain_ingest_queue.py` *(new, commit `d5b4bb6`)* | Operational driver for PGMQ workers (`ingest_frames`, `ingest_embed_frames`). |
+| `eval/reports/2026-05-27_visual_eval/{methodology.mdx, summary.json, per_example.jsonl}` *(new/updated, commit `ec7b5b7`)* | REAL-RUN report with per-channel + lift numbers, per-example analysis, reproducibility commands. |
 
-DB state at close: `eval_runs` has 1 row with `code_path='embeddings_bakeoff'` (the locked winner) plus 15 `code_path='minimal_generation'` rows from phase 1. `eval_results` has 10 rows under the bakeoff run_id. No `code_path='visual_eval'` rows yet — the gate skips until `frames`/`frame_patches` exist for the referenced `visual_gold.jsonl` videos.
+DB state at close: `eval_runs` has 1 row with `code_path='embeddings_bakeoff'` (the bakeoff #1 locked winner) + 1 row with `code_path='visual_eval'` (the first real visual run, `visual-eval-3d5384cd6446`) + 15 `code_path='minimal_generation'` rows from phase 1. `eval_results` has 10 rows under the bakeoff run_id and 8 rows under the visual run_id (one per visual_gold example).
 
 ---
 
@@ -184,11 +197,11 @@ DB state at close: `eval_runs` has 1 row with `code_path='embeddings_bakeoff'` (
 - Async LangGraph (`ainvoke`) — phase 4.
 - OpenRouter failover wiring — phase 4.
 
-### Visual eval — gated on substrate (not a bakeoff #2 dependency)
+### Visual eval — shipped this session; followups for v1 (not a bakeoff #2 dependency)
 
-- Visual gold is staged: 8 verified visual examples, with evidence in `eval/curation/visual_gold_review/2026-05-27/`.
-- Run MP4 + ColQwen patch ingest to populate `frames.pooled_embedding` and `frame_patches` for every referenced `video_id`.
-- Then `uv run python -m eval.runners.run_visual_eval` produces real numbers; the slow test flips from skip-path to real-assertions path automatically.
+- First real run landed at `visual-eval-3d5384cd6446` (commit `ec7b5b7`). Visual gold, ingest pipeline, and methodology MDX all populated.
+- **Visual-required gold pass is still owed.** The current 8 visual_gold rows are text-saturated (lift = 0 pp by construction). To make lift actionable, curate examples where the answer is on the slide and NOT in the transcript verbatim, so the 4-channel text RRF misses on at least one example.
+- **ColQwen processor `min_pixels` / `max_pixels` verification** flagged in ADR 005 is still owed. Print the actual band against the 720p PNG dimensions before drawing strong conclusions from the 1/8 standalone numbers.
 - No ADR amendment needed — ColQwen2.5 is the only visual candidate; the gate is quality, not selection.
 
 ---
