@@ -4,8 +4,12 @@
 # Prices updated via the changelog in docs/decisions/004-model-selection.md.
 # Re-verify against provider pricing pages before each bakeoff run.
 
-last_updated: "2026-05-24"
+last_updated: "2026-05-27"
 prices_checked_at: "2026-05-24"
+# 2026-05-27: refreshed Qwen3-235B-A22B-Instruct provider_model_id to the
+# `-2507` dated suffix (DeepInfra no longer publishes the un-suffixed id;
+# the un-suffixed id 404s). Candidate set unchanged (ADR 004 v3.1 locked).
+# Pricing unverified at this date — re-check before bakeoff #2 (week 6).
 sources:
   deepinfra: "https://deepinfra.com/pricing"
   openrouter: "https://openrouter.ai/models"
@@ -55,7 +59,7 @@ candidates:
         notes: "Top-3 open model on Arena. 86.4% tau2-bench Retail agentic."
       - id: qwen3-235b-a22b-instruct
         provider: deepinfra
-        provider_model_id: "Qwen/Qwen3-235B-A22B-Instruct"
+        provider_model_id: "Qwen/Qwen3-235B-A22B-Instruct-2507"
         price_input_per_mtok_usd: 0.071
         price_output_per_mtok_usd: 0.10
         license: apache-2.0
@@ -83,7 +87,7 @@ candidates:
         family: deepseek
       - id: qwen3-235b-a22b-instruct
         provider: deepinfra
-        provider_model_id: "Qwen/Qwen3-235B-A22B-Instruct"
+        provider_model_id: "Qwen/Qwen3-235B-A22B-Instruct-2507"
         price_input_per_mtok_usd: 0.071
         price_output_per_mtok_usd: 0.10
         family: alibaba-qwen
