@@ -40,11 +40,10 @@ GOLD_FILES = [
     "negative.jsonl",
     "synthesis.jsonl",
     # Visual eval gate — slide/screen_code/diagram/whiteboard gold examples.
-    # Currently scaffolded as an empty committed file: visual retrieval needs
-    # ingested MP4 frames + ColQwen patches AND verified visual gold examples
-    # before the eval scores anything. Schema + verified:true rules apply
-    # exactly as they do for the four text-eval files above, AND every entry
-    # must carry at least one VISUAL_MODALITY_TAG.
+    # Visual retrieval needs ingested MP4 frames + ColQwen patches before the
+    # eval scores anything. Schema + verified:true rules apply exactly as they
+    # do for the four text-eval files above, AND every entry must carry at
+    # least one VISUAL_MODALITY_TAG.
     "visual_gold.jsonl",
 ]
 

@@ -16,6 +16,7 @@ transcripts/*
 
 # Local video files (do not redistribute upstream content)
 videos/
+eval/curation/visual_gold_review/**/*.mp4
 
 # Sampled frame images (regenerable from videos/ + ingest.frames)
 frames/
