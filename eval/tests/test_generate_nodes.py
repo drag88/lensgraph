@@ -301,6 +301,47 @@ def test_cite_node_flags_non_overlapping_citation_as_invalid():
     assert final.invalid_citations[0].answer_claim_index == 0
 
 
+def test_cite_node_rejects_out_of_bounds_answer_claim_index():
+    """A citation whose answer_claim_index references a claim slot the
+    model never emitted is a hallucination — must land in invalid_citations
+    with a clear out-of-bounds reason, NOT be quietly accepted just
+    because the timestamp happens to overlap a real chunk."""
+    parsed = GenerationOutput(
+        answer="x",
+        claims=[{"text": "only-claim-zero"}],  # n_claims = 1; valid indices = {0}
+        citations=[
+            {
+                "video_id": "v",
+                "start_sec": 100.0,
+                "end_sec": 110.0,
+                "answer_claim_index": 5,  # out of bounds — would have been valid by overlap
+            }
+        ],
+        abstain=False,
+        parse_ok=True,
+        raw_response="",
+    )
+    state = {
+        "query": "q",
+        "corpus_id": "c",
+        "trace_id": "t",
+        "parsed": parsed,
+        "reranked": [_stub_chunk(42, "v", 95.0, 115.0, "chunk text")],
+        "iteration": 0,
+    }
+    out = cite_mod.cite(state)
+    final = out["final"]
+    assert final.valid_citations == [], (
+        "out-of-bounds answer_claim_index must NOT be accepted even when "
+        "the timestamp overlaps a real chunk — the model invented a claim slot"
+    )
+    assert len(final.invalid_citations) == 1
+    inv = final.invalid_citations[0]
+    assert inv.answer_claim_index == 5
+    assert "out of bounds" in inv.reason
+    assert "claims emitted: 1" in inv.reason
+
+
 def test_cite_node_emits_abstention_on_parse_failure():
     parsed = GenerationOutput(parse_ok=False, raw_response="garbage", error="bad json")
     state = {

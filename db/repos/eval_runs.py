@@ -141,28 +141,40 @@ def load_bakeoff_winner(
     *,
     component: str,
     chunking_strategy: str = "fixed_window",
+    code_path: str | None = None,
 ) -> str | None:
     """Return the locked winner's ``candidate_id`` (yaml id), or ``None``.
 
-    Design §5 SQL: ``ORDER BY created_at DESC LIMIT 1``. We do NOT
-    filter on ``code_path`` here even though design specifies
-    ``code_path='minimal_generation'`` for generator/judge selection;
-    that filter belongs in the caller (generate/api.py) per component,
-    because phase-1 step 35a uses ``code_path='embeddings_bakeoff'``
-    for the text_embeddings lock. Keeping the repo agnostic lets the
-    same function serve both."""
-    row = conn.execute(
-        """
-        SELECT summary->>'winner_candidate_id'
-          FROM eval_runs
-         WHERE summary->>'winner_locked' = 'true'
-           AND summary->>'component' = %s
-           AND chunking_strategy = %s
-         ORDER BY created_at DESC
-         LIMIT 1
-        """,
-        (component, chunking_strategy),
-    ).fetchone()
+    Design §5 SQL filters on ``code_path = 'minimal_generation'`` so a
+    phase-3 LangGraph re-run (code_path='langgraph_loop') with
+    winner_locked=true can NEVER be picked up as the canonical
+    generator/judge selection — the loop adds Plan/Verify/Cite confounds
+    and is comparison-only. Callers MUST pass the code_path that's
+    canonical for their component:
+
+      * generator / judge → ``code_path='minimal_generation'``
+      * text_embeddings   → ``code_path='embeddings_bakeoff'``
+      * (future: chunking → ``code_path='chunking_ablation'``)
+
+    ``code_path=None`` skips the filter (used only by tests that want to
+    inspect the most-recent locked winner across paths). Production
+    callers should NEVER omit ``code_path`` — the design-§5 SQL is
+    explicit about it and a phase-3 lock could otherwise leak through.
+    """
+    sql = [
+        "SELECT summary->>'winner_candidate_id'",
+        "  FROM eval_runs",
+        " WHERE summary->>'winner_locked' = 'true'",
+        "   AND summary->>'component' = %s",
+        "   AND chunking_strategy = %s",
+    ]
+    params: list = [component, chunking_strategy]
+    if code_path is not None:
+        sql.append("   AND code_path = %s")
+        params.append(code_path)
+    sql.append(" ORDER BY created_at DESC LIMIT 1")
+
+    row = conn.execute("\n".join(sql), tuple(params)).fetchone()
     if row is None or row[0] is None:
         return None
     return row[0]

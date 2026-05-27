@@ -24,6 +24,7 @@ Slice 3, atomic per concern:
 - `feat(scripts): embeddings-bakeoff scaffold (step 35a) + dev_gold sweep driver (step 35)`
 - `fix(eval): refresh Qwen3-235B-A22B-Instruct provider_model_id to -2507 suffix`
 - `docs(handoff): close phase-1 week-5 — slice 3 shipped, EXIT GATE passed, step 35 unlocks phase 2`
+- `fix(generate,db): cite bounds-check answer_claim_index + load_bakeoff_winner code_path filter` (Codex review fixes)
 
 Slices 1 + 2 closeout commits live in earlier handoffs.
 
@@ -36,11 +37,11 @@ make test                 84 fast tests pass (+24 from slice 3)
 make lint                 clean
 make phase0-gate          OK (11 verified non-negative examples across 3 talks)
 make validate-evals-strict 0 warnings
-slice-3 slow suite        27 passed (~3 min warm)
-  - test_eval_runs_repo        5 slow
+slice-3 slow suite        29 passed (~3 min warm)
+  - test_eval_runs_repo        5 slow (incl. langgraph_loop code_path ignore proof — Codex review)
   - test_traces                4 slow
   - test_minimal_generation    3 slow
-  - test_generate_nodes        9 slow
+  - test_generate_nodes       10 slow (incl. cite answer_claim_index bounds-check — Codex review)
   - test_generate_graph        6 slow (a–f sub-assertions)
   - test_run_embeddings_bakeoff 1 slow
 ```
@@ -54,10 +55,12 @@ Slice 3 NEW fast suites (in addition to all prior slice-1/2 fast tests):
   test_plan_deterministic      7  (fast — synthesis cues, speaker mentions, deterministic-only)
 
 Slice 3 NEW slow suites:
-  test_eval_runs_repo          5  (slow — insert_run, insert_result, lock_bakeoff_winner idempotent, load_bakeoff_winner MRU)
+  test_eval_runs_repo          5  (slow — insert_run, insert_result, lock_bakeoff_winner idempotent, load_bakeoff_winner MRU,
+                                          + langgraph_loop code_path ignore proof from Codex review)
   test_traces                  4  (slow — start/end/flush round-trip; batched jsonb[] cast)
   test_minimal_generation      3  (slow — mocked provider; eval_runs row written; ProviderError propagates)
-  test_generate_nodes          9  (slow — plan/retrieve/rerank/verify/generate/cite isolated)
+  test_generate_nodes         10  (slow — plan/retrieve/rerank/verify/generate/cite isolated +
+                                          cite answer_claim_index out-of-bounds rejection from Codex review)
   test_generate_graph          6  (slow — (a) trace+spans persisted (b) loop fires (c) iter cap stops at 2
                                           (d) abstention path (e) BakeoffNotYetRunError (f) CrossFamilyViolationError)
   test_run_embeddings_bakeoff  1  (slow — winner_locked=true row written for text_embeddings)
@@ -169,11 +172,9 @@ Working pattern: when a model 404s at runtime, query `https://api.deepinfra.com/
 ## Substrate state (resumes across `make db-down`/`up` via named volume `pgdata`)
 
 - 3 talks ingested in `ai_engineering_v0`: nXafozNIk3c, aie_sg_2026_d2_arize_alyx (chapter slice of m12vGjfbNlo), W_CYk2ogcDI.
-- 212 chunks · 212 dense_embeds · 212 sparse_embeds · 73,621 chunk_token_embeds.
+- 212 chunks · 212 dense_embeds · 212 sparse_embeds · 73,621 chunk_token_embeds (these match the corpus + chunker config; they're invariant until ingest re-runs).
 - `frames` / `frame_patches` empty (no `.mp4` files staged today). Visual retrieval still works at the API level — gracefully returns `[]` when no frames exist.
-- `traces`: 4 rows (3 EXIT GATE attempts; 1 successful with 6 spans).
-- `eval_runs`: 13 rows total (2 smoke runs + 11 step-35 sweep, all `code_path='minimal_generation'`).
-- `eval_results`: 13 rows (one per eval_runs).
+- `traces` / `trace_spans` / `eval_runs` / `eval_results`: populated by this session's EXIT GATE + step-35 sweep + slow-test runs. Exact row counts drift as tests, sweeps, and re-runs accumulate — query them at session start (`SELECT count(*), code_path FROM eval_runs GROUP BY code_path`) rather than trusting a number in this handoff. The contract that matters for phase 2: at least one `code_path='minimal_generation'` sweep with `parse_ok=True` rows across all 11 phase-0 examples exists in `eval_runs` + `eval_results`.
 
 ---
 
@@ -183,9 +184,17 @@ Working pattern: when a model 404s at runtime, query `https://api.deepinfra.com/
 2. **Postgres only.** (ADR 002.) No Langfuse, no Redis. The trace + trace_spans tables are the observability backend.
 3. **No silent model defaults.** (ADR 004 v3.1.) `answer()` raises `BakeoffNotYetRunError` when caller omits generator OR judge AND no `winner_locked` row exists. Until phase-2's bakeoffs land winners, callers MUST pass `GENERATOR=` and `JUDGE=`.
 4. **Cross-family judge enforced at runtime.** `CrossFamilyViolationError` when `generator.family == judge.family`. Sourced from `candidates.<component>.options[*].family` in `model_candidates.yaml`.
-5. **All model + provider IDs from `eval/config/model_candidates.yaml`.** Resolver pair in `eval.runners.providers`: `_resolve_provider_model_id`, `_resolve_candidate_family`, `_resolve_candidate_provider`. Zero hardcoded literals in `generate/`, `eval/runners/`, `scripts/`, `db/repos/`. Pre-commit grep guard:
-   `grep -rE "qwen3-235|deepseek-v3|gemma-4-31" generate/ eval/runners/ scripts/ db/repos/ | grep -v ".pyc"`
-   MUST return zero matches.
+5. **Model + provider IDs come from `eval/config/model_candidates.yaml` — wire IDs are never hardcoded.** The resolver trio in `eval.runners.providers` (`_resolve_provider_model_id`, `_resolve_candidate_family`, `_resolve_candidate_provider`) is the only path that turns a yaml candidate id into a routing string. What the rule covers:
+
+   - **BANNED in impl code** (`generate/`, `eval/runners/minimal_generation.py`, `scripts/`, `db/repos/`): wire-level `provider_model_id` literals (`Qwen/Qwen3-...`, `deepseek-ai/DeepSeek-...`, `google/gemma-4-...`) and the `"deepinfra"` provider string as a default. These must always be resolved from yaml.
+   - **ALLOWED in impl code**: the DeepInfra adapter constants in `eval/runners/providers.py` itself (`_DEEPINFRA_CHAT_URL`, the `DEEPINFRA_API_KEY` env-var name) — that file IS the DeepInfra adapter. Candidate yaml ids (`qwen3-235b-a22b-instruct` etc.) in docstrings, CLI help text, and tests as illustrative examples are fine.
+   - **Pre-commit grep guard (wire IDs only, excludes the adapter):**
+     ```
+     grep -rE "Qwen/Qwen3|deepseek-ai/DeepSeek|google/gemma-4" \
+       generate/ eval/runners/minimal_generation.py scripts/ db/repos/ \
+       | grep -v ".pyc"
+     ```
+     MUST return zero matches. The yaml-routing rule survives because `eval/runners/providers.py` is intentionally excluded — every other module routes through it.
 6. **Provider tests mocked.** `httpx.MockTransport` only in pytest. The operator-run `make answer` is the only place real network traffic happens.
 7. **`make phase0-gate` stays green at every commit.**
 8. **Iteration cap = 2 enforced inside verify.** The router checks `(low conf + refined_query is not None)` only — `refined_query=None` is the verify-side signal that the cap fired. Single source of truth.

@@ -237,3 +237,69 @@ def test_load_bakeoff_winner_returns_most_recent(conn):
         eval_runs.load_bakeoff_winner(conn, component="generator")
         == "deepseek-v3.2"
     )
+
+
+def test_load_bakeoff_winner_ignores_non_minimal_generation_code_path(conn):
+    """Design §5 SQL: generator/judge winner resolution must filter by
+    code_path='minimal_generation'. A phase-3 langgraph_loop run with
+    winner_locked=true must NEVER be picked up as the canonical generator
+    selection — the loop adds Plan/Verify/Cite confounds the bakeoff is
+    built to isolate.
+
+    Setup: lock a minimal_generation winner (gemma) THEN lock a more
+    recent langgraph_loop winner (qwen). Without the filter, the MRU
+    rule would return qwen; with the filter, gemma wins. The newest row
+    here is langgraph_loop so the test catches a missing filter — if
+    load_bakeoff_winner didn't apply ``code_path``, MRU would pick
+    langgraph_loop's qwen.
+    """
+    older_mg = _rid()
+    eval_runs.insert_run(
+        conn,
+        run_id=older_mg,
+        run_date=date(2026, 5, 1),
+        code_path="minimal_generation",
+        chunking_strategy="fixed_window",
+        embedding_model_id="bge-m3-all-channels",
+        candidate_set_yaml={"x": 1},
+        summary={},
+    )
+    eval_runs.lock_bakeoff_winner(
+        conn,
+        component="generator",
+        candidate_id="gemma-4-31b",
+        run_id=older_mg,
+    )
+
+    newer_lg = _rid()
+    eval_runs.insert_run(
+        conn,
+        run_id=newer_lg,
+        run_date=date(2026, 5, 20),
+        code_path="langgraph_loop",
+        chunking_strategy="fixed_window",
+        embedding_model_id="bge-m3-all-channels",
+        candidate_set_yaml={"x": 1},
+        summary={},
+    )
+    eval_runs.lock_bakeoff_winner(
+        conn,
+        component="generator",
+        candidate_id="qwen3-235b-a22b-instruct",
+        run_id=newer_lg,
+    )
+
+    # Filtered: only minimal_generation rows count → gemma wins.
+    assert (
+        eval_runs.load_bakeoff_winner(
+            conn, component="generator", code_path="minimal_generation"
+        )
+        == "gemma-4-31b"
+    ), "code_path filter must keep the langgraph_loop lock from leaking through"
+
+    # Unfiltered (None) returns MRU across all code_paths — used by tests
+    # only; production callers MUST pass code_path.
+    assert (
+        eval_runs.load_bakeoff_winner(conn, component="generator")
+        == "qwen3-235b-a22b-instruct"
+    )

@@ -48,9 +48,40 @@ def _overlap_ratio(cit: Citation, chunk: RetrievedChunk) -> float:
 
 
 def _validate_one(
-    cit: Citation, reranked: list[RetrievedChunk]
+    cit: Citation, reranked: list[RetrievedChunk], n_claims: int
 ) -> tuple[ValidatedCitation | None, InvalidCitation | None]:
-    """Either-or: a citation is valid (matched) or invalid (no overlap)."""
+    """Either-or: a citation is valid (matched) or invalid (no overlap,
+    or out-of-bounds claim index).
+
+    Two independent failure modes are surfaced as InvalidCitation so the
+    phase-2 CitationAccuracy metric counts both (and never hides them by
+    snapping to the nearest chunk or clamping the index):
+
+      * ``answer_claim_index >= n_claims`` (or negative — Pydantic catches
+        negative at parse time, so we just guard the upper bound here).
+        The model invented a claim slot that doesn't exist. Checked FIRST
+        because an out-of-bounds index is a stronger hallucination signal
+        than a missing-overlap span — surfacing it under the "no overlap"
+        reason would mask the real failure.
+      * No chunk with >=50% overlap on the cited ``video_id``. The cited
+        span doesn't match anything the reranker handed the generator.
+    """
+    if cit.answer_claim_index >= n_claims:
+        reason = (
+            f"answer_claim_index={cit.answer_claim_index} out of bounds "
+            f"(claims emitted: {n_claims})"
+        )
+        return (
+            None,
+            InvalidCitation(
+                video_id=cit.video_id,
+                start_sec=cit.start_sec,
+                end_sec=cit.end_sec,
+                answer_claim_index=cit.answer_claim_index,
+                reason=reason,
+            ),
+        )
+
     best_chunk: RetrievedChunk | None = None
     best_ratio = 0.0
     for c in reranked:
@@ -114,8 +145,9 @@ def cite(state: AgentState) -> AgentState:
 
     valid: list[ValidatedCitation] = []
     invalid: list[InvalidCitation] = []
+    n_claims = len(parsed.claims)
     for cit in parsed.citations:
-        v, iv = _validate_one(cit, reranked)
+        v, iv = _validate_one(cit, reranked, n_claims)
         if v is not None:
             valid.append(v)
         if iv is not None:

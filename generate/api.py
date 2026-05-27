@@ -129,8 +129,12 @@ def _resolve_generator(
     """Return (resolved, explicit?) for the generator component."""
     explicit = candidate_id is not None
     if candidate_id is None:
+        # code_path='minimal_generation' per design §5 SQL: a phase-3
+        # langgraph_loop run with winner_locked=true must NEVER auto-resolve
+        # as the canonical generator winner (it would carry Plan/Verify/Cite
+        # confounds the bakeoff is built to isolate).
         candidate_id = eval_runs_repo.load_bakeoff_winner(
-            conn, component="generator"
+            conn, component="generator", code_path="minimal_generation"
         )
     if candidate_id is None:
         raise BakeoffNotYetRunError(
@@ -161,8 +165,10 @@ def _resolve_judge(
 ) -> tuple[JudgeCandidate, bool]:
     explicit = candidate_id is not None
     if candidate_id is None:
+        # See _resolve_generator: code_path filter keeps phase-3
+        # langgraph_loop locks from leaking into canonical selection.
         candidate_id = eval_runs_repo.load_bakeoff_winner(
-            conn, component="judge"
+            conn, component="judge", code_path="minimal_generation"
         )
     if candidate_id is None:
         raise BakeoffNotYetRunError(
