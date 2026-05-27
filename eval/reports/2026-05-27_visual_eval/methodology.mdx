@@ -88,7 +88,7 @@ The slow integration test (`eval/tests/test_run_visual_eval.py`) asserts the rig
 
 2. **Ingest MP4 frames + ColQwen patches.** `ingest/frames.py` and the ColQwen patch worker need to run against the source videos (`videos/<video_id>.mp4`, gitignored). Once `frames.pooled_embedding` and `frame_patches` are populated, the substrate check in `run_visual_eval.py` flips from SKIP to RUN automatically.
 
-3. **Run the gate.** `uv run python -m scripts.run_visual_eval` produces the `eval_runs` row + per-example `eval_results` and stdout-reports the metrics. The slow integration test starts asserting against real numbers instead of just the skip path.
+3. **Run the gate.** `uv run python -m eval.runners.run_visual_eval` produces the `eval_runs` row + per-example `eval_results` and stdout-reports the metrics. The slow integration test starts asserting against real numbers instead of just the skip path. (A back-compat shim at `scripts/run_visual_eval.py` still works but the canonical entry point is under `eval/runners/` because this module defines an eval run.)
 
 ## What's deliberately out of scope
 
@@ -100,14 +100,22 @@ The slow integration test (`eval/tests/test_run_visual_eval.py`) asserts the rig
 
 ```
 eval/corpora/ai_engineering_v0/
-├── visual_gold.jsonl                # committed, empty scaffold (validator enforces verified:true)
+├── visual_gold.jsonl                # committed, empty scaffold (validator enforces
+│                                    # verified:true AND modality intersects
+│                                    # {slide, screen_code, diagram, whiteboard})
 └── (no draft committed — drafts go under *_gold.draft.jsonl per .gitignore)
 
 eval/runners/measure_visual.py       # metric primitives + measure_visual()
-scripts/run_visual_eval.py           # runner: load → measure → eval_runs + eval_results (transactional)
+eval/runners/run_visual_eval.py      # canonical runner: load → per-video substrate
+                                     # check → measure → eval_runs + eval_results
+                                     # (transactional). Resolves the candidate id
+                                     # from candidates.visual_retrieval.options.
+scripts/run_visual_eval.py           # back-compat shim → eval.runners.run_visual_eval.main
 
-eval/tests/test_measure_visual.py    # fast unit tests for metric primitives + lift
-eval/tests/test_run_visual_eval.py   # slow integration test (skip when empty; run when populated)
+eval/tests/test_measure_visual.py    # fast unit tests for metric primitives + lift +
+                                     # candidate resolver + shim-delegation guard
+eval/tests/test_run_visual_eval.py   # slow integration tests: live-DB skip-or-run
+                                     # + per-video substrate regression on a test DB
 
 eval/reports/2026-05-27_visual_eval/methodology.mdx  # this file
 ```

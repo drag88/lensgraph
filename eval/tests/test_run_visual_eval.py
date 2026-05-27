@@ -1,25 +1,26 @@
-"""Slow integration test for ``scripts/run_visual_eval.py``.
+"""Slow integration tests for ``scripts/run_visual_eval.py``.
 
-Runs against the LIVE ``lensgraph`` DB. Two skip gates make the test
-honest about what it can prove today:
+Two tests:
 
-* Visual gold is empty → skip (no gold to score).
-* Frames / frame_patches tables empty → skip (no substrate to query).
+1. ``test_visual_eval_skips_or_runs_against_live_db`` — runs against
+   the LIVE ``lensgraph`` DB. Two skip gates make the test honest:
+   visual_gold empty → skip; frames/frame_patches empty → skip. Today
+   the repo hits both, so we assert the SKIP path itself (script exits
+   0, writes no row, prints the right message). When the substrate +
+   gold fill in, the same test body asserts the real run.
 
-Today's repo state hits both: ``visual_gold.jsonl`` is a committed
-empty scaffold, and the MP4 + ColQwen patch ingest hasn't been run.
-We still exercise the SKIP path itself (assert the script exits 0 with
-a clear message and writes no row) so the gate code stays honest as
-the substrate fills in.
-
-The "happy path" — when both substrate + gold are populated — is
-covered by the same test body via the ``substrate_ready`` boolean: if
-True, the test asserts the actual run wrote a row + N eval_results
-rows + the script reported the metrics.
+2. ``test_skip_when_visual_gold_video_has_no_substrate`` — uses a
+   throwaway test DB. Stages a talk with frames + patches for
+   ``unrelated-video``, but the visual_gold.jsonl points at
+   ``video-without-frames``. The per-video substrate check must skip
+   (NOT measure with degenerate zeros) and write nothing to eval_runs.
+   This is the regression test for the global-vs-per-video readiness
+   fix.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
@@ -27,8 +28,29 @@ import psycopg
 import pytest
 
 from db.conn import dsn as resolve_dsn
+from db.migrate import apply
 
 pytestmark = pytest.mark.slow
+
+_TEST_DB_NAME = "lensgraph_test_run_visual_eval"
+
+
+def _swap_db(dsn: str, new_db: str) -> str:
+    head, _, _ = dsn.rpartition("/")
+    return f"{head}/{new_db}"
+
+
+@pytest.fixture(scope="module")
+def test_db():
+    admin = resolve_dsn()
+    with psycopg.connect(admin, autocommit=True) as c:
+        c.execute(f"DROP DATABASE IF EXISTS {_TEST_DB_NAME}")
+        c.execute(f"CREATE DATABASE {_TEST_DB_NAME}")
+    test_dsn = _swap_db(admin, _TEST_DB_NAME)
+    apply(test_dsn)
+    yield test_dsn
+    with psycopg.connect(admin, autocommit=True) as c:
+        c.execute(f"DROP DATABASE IF EXISTS {_TEST_DB_NAME}")
 
 
 def _check_substrate() -> tuple[int, int]:
@@ -132,3 +154,110 @@ def test_visual_eval_skips_or_runs_against_live_db():
                     "DELETE FROM eval_runs WHERE run_id = ANY(%s)",
                     (list(new_ids),),
                 )
+
+
+def _insert_talk(conn: psycopg.Connection, video_id: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO talks (
+            video_id, title, speaker, url, duration_sec, format_tags,
+            license, captions_source, transcript_path, transcript_sha256,
+            accessed_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        """,
+        (
+            video_id,
+            f"Title {video_id}",
+            "Speaker",
+            f"https://example.com/{video_id}",
+            600,
+            ["slides_heavy"],
+            "youtube_standard",
+            "youtube_auto",
+            f"transcripts/{video_id}.vtt",
+            "0" * 64,
+            "2026-05-27T00:00:00Z",
+        ),
+    )
+
+
+def test_skip_when_visual_gold_video_has_no_substrate(test_db, tmp_path, monkeypatch):
+    """The fix for finding #1: per-video substrate readiness, not a
+    global frame count.
+
+    Stage frames + patches for ``unrelated-video`` (so a global check
+    would have passed) but point visual_gold at ``video-without-frames``.
+    The script must skip with the per-video missing message and write
+    no eval_runs row."""
+    from pgvector.psycopg import register_vector
+
+    visual_video = "video-without-frames"
+    unrelated_video = "unrelated-video"
+
+    with psycopg.connect(test_db, autocommit=True) as c:
+        register_vector(c)
+        _insert_talk(c, unrelated_video)
+        _insert_talk(c, visual_video)
+        # Frames + patches exist ONLY for unrelated-video.
+        vec = [0.1] * 128  # ColQwen pooled vec dim from migration 0003
+        fid = c.execute(
+            """INSERT INTO frames (video_id, frame_sec, image_path, sha256, pooled_embedding)
+               VALUES (%s, %s, %s, %s, %s) RETURNING frame_id""",
+            (unrelated_video, 10.0, "/tmp/x.png", "a" * 64, vec),
+        ).fetchone()[0]
+        c.execute(
+            "INSERT INTO frame_patches (frame_id, patch_index, embedding) VALUES (%s, %s, %s)",
+            (fid, 0, vec),
+        )
+
+    # visual_gold points at the video with no substrate. Modality must
+    # include a visual tag (load_visual_gold enforces this).
+    gold_path = tmp_path / "visual_gold.jsonl"
+    gold_path.write_text(
+        json.dumps(
+            {
+                "id": "vis-no-frames",
+                "question": "what does the slide show at the start of the talk?",
+                "video_id": visual_video,
+                "split": "dev",
+                "question_type": "single_clip",
+                "gold_spans": [{"start_sec": 100, "end_sec": 120}],
+                "modality": ["slide"],
+                "difficulty": "easy",
+                "curator": "tester",
+                "curated_at": "2026-05-27T00:00:00Z",
+                "verified": True,
+            }
+        )
+    )
+
+    monkeypatch.setenv("POSTGRES_DSN", test_db)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "eval.runners.run_visual_eval",
+            "--visual-gold",
+            str(gold_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"per-video skip must exit 0; stdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    assert "visual substrate not ingested for visual_gold video_id(s)" in proc.stdout, (
+        proc.stdout
+    )
+    assert visual_video in proc.stdout, proc.stdout
+
+    with psycopg.connect(test_db, autocommit=True) as c:
+        n_runs = c.execute(
+            "SELECT count(*) FROM eval_runs WHERE code_path = 'visual_eval'"
+        ).fetchone()[0]
+        n_results = c.execute("SELECT count(*) FROM eval_results").fetchone()[0]
+    assert n_runs == 0, f"per-video skip must write no eval_runs row; got {n_runs}"
+    assert n_results == 0, f"per-video skip must write no eval_results rows; got {n_results}"

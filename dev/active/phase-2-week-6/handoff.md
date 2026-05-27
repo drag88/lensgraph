@@ -29,13 +29,18 @@ ColQwen2.5 is the 5th retrieval channel in production but was **not** measured b
 - **Metrics:** `VisualFrameRecall@k` (frame timestamp ± frame-sample cadence), `VisualChunkTR@k` (open-interval overlap, same convention as text), `VisualLift@k` (5-ch RRF with visual vs 4-ch RRF without visual). Definitions and rationale in `eval/reports/2026-05-27_visual_eval/methodology.mdx`.
 - **Status today:** STUB. The runner skips with a clear message because (a) `visual_gold.jsonl` is a committed empty scaffold (no verified visual examples yet — dev_gold is transcript-only) and (b) `frames` / `frame_patches` are empty (no MP4 + ColQwen patch ingest run yet). Both must be populated before the gate scores anything; the test asserts the skip text so the gate cannot silently rot.
 - **Atomicity:** Same eval_runs + eval_results transactional contract as bakeoff #1 (review-fix #2 patch). No winner is locked — ColQwen2.5 is the only candidate.
-- **Unblock path:** verify slide-likely candidate examples from existing dev_gold (the methodology MDX names three), run MP4 ingest + ColQwen patch worker, then `uv run python -m scripts.run_visual_eval`.
+- **Unblock path:** verify slide-likely candidate examples from existing dev_gold (the methodology MDX names three), run MP4 ingest + ColQwen patch worker, then `uv run python -m eval.runners.run_visual_eval`. (A back-compat shim under `scripts/run_visual_eval.py` still works; the canonical path lives under `eval/runners/` because the runner defines an eval run and writes `eval_runs` / `eval_results`.)
+- **Substrate readiness is per-video, not global.** The runner checks `frames.pooled_embedding > 0 AND frame_patches > 0` for each `video_id` referenced by `visual_gold.jsonl`; frames for unrelated talks do NOT count. Skip text lists the missing video_ids.
+- **visual_gold modality enforced.** Both the loader (`measure_visual.load_visual_gold`) and the validator (`eval/validate.py`) reject `visual_gold.jsonl` entries whose `modality` does not intersect `{slide, screen_code, diagram, whiteboard}` — transcript-only rows belong in `dev_gold.jsonl`, not here.
+- **Candidate id resolved from yaml.** `eval/runners/run_visual_eval.py::resolve_visual_candidate_id` reads `candidates.visual_retrieval.options`, filters to `provider == 'local'`, and requires exactly one match — no hard-coded `colqwen2.5` string.
 
 ---
 
 ## Where we are at HEAD
 
 ```
+d28307d eval(visual): scaffold visual retrieval eval gate (separate from bakeoff #1)
+751c14f eval(bakeoff): bakeoff #1 review fixes #2 — close json loophole, atomic writes, handoff hash
 21d2b93 eval(bakeoff): bakeoff #1 review fixes — eval_results writes + handoff closeout
 1ec8bf1 eval(bakeoff): bakeoff #1 — text embeddings (winner: bge-m3-all-channels, TR@5 best-of-channel 1.00)
 03365fd docs(handoff): open phase 2 week 6 — bakeoff #1 (text embeddings)
@@ -44,18 +49,20 @@ a1fa1dd fix(generate,db): cite bounds-check answer_claim_index + load_bakeoff_wi
 a37f9b6 docs(handoff): close phase-1 week-5 — slice 3 shipped, EXIT GATE passed, step 35 unlocks phase 2
 ```
 
-Further review-fix commits may sit on top of `21d2b93` (e.g. atomicity hardening,
-loophole closures) — check `git log --oneline` if the handoff seems out of date.
+Further review-fix commits may sit on top of `d28307d` (per-video substrate +
+visual-modality enforcement + candidate-resolver + runner-relocation under
+`eval/runners/`). Check `git log --oneline` if the handoff seems out of date.
 
 ### Gates green at close
 
 ```
 make validate-evals-strict   OK (0 warnings, 11 verified gold)
 make phase0-gate             OK (11/3 across 3 talks)
-make test                    OK (84 fast tests)
+make test                    OK (107 fast tests — adds 16 visual + 7 review-fix tests)
 make lint                    OK
-uv run pytest -m slow eval/tests/test_run_embeddings_bakeoff.py
-                             OK (2 slow tests, ~3 min warm)
+uv run pytest -m slow eval/tests/test_run_visual_eval.py \
+                       eval/tests/test_run_embeddings_bakeoff.py
+                             OK (6 targeted slow tests, ~2:50 warm)
 ```
 
 ### Locked-winner DB contract
@@ -107,14 +114,29 @@ The bakeoff #1 `methodology.mdx` is the resume-grade writeup for text embeddings
 
 ## What changed this session
 
+### Bakeoff #1 — text embeddings (initial → review fix #1 → review fix #2)
+
 | File | Change |
 |---|---|
 | `eval/runners/measure_embeddings.py` *(new)* | Per-channel TR@5 sweep: `tr_at_k`, `_passes_at_k`, `CHANNEL_FNS`, `measure_all_channels` (returns aggregate summary + per-example detail tuple). |
-| `scripts/run_embeddings_bakeoff.py` | Replaced synthetic-stub default with real sweep against `dev_gold.jsonl`. Failing-minimum path writes the row honestly + exits non-zero. Now also writes one `eval_results` row per example (system_output + metrics). |
-| `eval/tests/test_run_embeddings_bakeoff.py` | Added slow test `test_real_measurements_against_dev_gold` — live DB, asserts per-channel TR@5 floats + lock state + N eval_results rows + per-row schema. Self-cleans (CASCADE on `eval_runs` delete). |
+| `scripts/run_embeddings_bakeoff.py` | Replaced synthetic-stub default with real sweep against `dev_gold.jsonl`. Failing-minimum path writes the row honestly + exits non-zero. Writes one `eval_results` row per example (review-fix #1). Transactional writes + from-file shape now requires `{measurements, per_example}` object + rejects bare-list with exit 2 (review-fix #2). |
+| `eval/tests/test_run_embeddings_bakeoff.py` | Slow tests: real-sweep contract, lock contract, legacy-shape rejection, mid-loop failure rollback. Self-cleaning via CASCADE on `eval_runs` delete. |
 | `eval/reports/2026-05-27_embeddings_bakeoff/` *(new)* | `methodology.mdx`, `summary.json`, `per_example.jsonl`. |
 
-DB state at close: `eval_runs` now has 1 row with `code_path='embeddings_bakeoff'` (the locked winner) plus 15 `code_path='minimal_generation'` rows from phase 1. `eval_results` has 10 rows under the bakeoff run_id.
+### Visual retrieval eval (scaffold + review fix #3)
+
+| File | Change |
+|---|---|
+| `eval/corpora/ai_engineering_v0/visual_gold.jsonl` *(new)* | Committed empty scaffold. Validator now lists it in `GOLD_FILES` and enforces `verified: true` + visual modality intersection. |
+| `eval/runners/measure_visual.py` *(new)* | `VisualFrameRecall@k`, `VisualChunkTR@k`, `VisualLift@k` primitives + `measure_visual()` aggregate. Loader rejects entries without a visual modality tag. |
+| `eval/runners/run_visual_eval.py` *(new, canonical)* | Runner: load → per-video substrate check → measure → eval_runs + eval_results (transactional). Resolves candidate id from `candidates.visual_retrieval.options` (`provider == 'local'`, exactly one). Invoke via `python -m eval.runners.run_visual_eval`. |
+| `scripts/run_visual_eval.py` | Reduced to a back-compat shim that delegates to `eval.runners.run_visual_eval.main`. No duplicated logic. |
+| `eval/validate.py` | Adds `visual_gold.jsonl` to `GOLD_FILES` and enforces visual modality on every committed entry. |
+| `eval/tests/test_measure_visual.py` *(new)* | Fast unit tests: metric primitives, lift math, gold loader (including modality rejection), candidate resolver, shim-delegation guard, validator visual-modality rejection. |
+| `eval/tests/test_run_visual_eval.py` *(new)* | Slow tests: live-DB skip-or-run + per-video substrate regression on a test DB (frames staged for unrelated video, visual_gold points elsewhere → must skip). |
+| `eval/reports/2026-05-27_visual_eval/methodology.mdx` *(new)* | STUB report — what bakeoff #1 did NOT cover, metric definitions, skip semantics, unblock path. |
+
+DB state at close: `eval_runs` has 1 row with `code_path='embeddings_bakeoff'` (the locked winner) plus 15 `code_path='minimal_generation'` rows from phase 1. `eval_results` has 10 rows under the bakeoff run_id. No `code_path='visual_eval'` rows yet — the gate skips until `visual_gold.jsonl` is populated AND `frames`/`frame_patches` exist for the referenced videos.
 
 ---
 

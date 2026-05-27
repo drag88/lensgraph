@@ -43,9 +43,17 @@ GOLD_FILES = [
     # Currently scaffolded as an empty committed file: visual retrieval needs
     # ingested MP4 frames + ColQwen patches AND verified visual gold examples
     # before the eval scores anything. Schema + verified:true rules apply
-    # exactly as they do for the four text-eval files above.
+    # exactly as they do for the four text-eval files above, AND every entry
+    # must carry at least one VISUAL_MODALITY_TAG.
     "visual_gold.jsonl",
 ]
+
+# visual_gold.jsonl entries must include at least one of these modality tags
+# (matches eval.runners.measure_visual.VISUAL_MODALITIES). Transcript-only or
+# audio-only rows belong in dev_gold; the validator rejects them here so a
+# misfiled entry cannot reach the visual eval.
+VISUAL_MODALITY_TAGS = frozenset({"slide", "screen_code", "diagram", "whiteboard"})
+VISUAL_GOLD_FILENAME = "visual_gold.jsonl"
 
 
 def load_validator(name: str) -> Draft202012Validator:
@@ -283,6 +291,20 @@ def validate_corpora(strict: bool = False) -> int:
                         f"{source}: unverified example committed (id={ex.get('id', '?')}). "
                         "Flip verified:true after watching the actual clip."
                     )
+
+                # visual_gold.jsonl entries must carry at least one visual
+                # modality tag — otherwise they cannot meaningfully be
+                # scored by the visual retrieval channel.
+                if jsonl_name == VISUAL_GOLD_FILENAME:
+                    modality = set(ex.get("modality") or [])
+                    if not (modality & VISUAL_MODALITY_TAGS):
+                        errors.append(
+                            f"{source}: visual_gold entry (id={ex.get('id', '?')}) "
+                            f"modality={sorted(modality)} lacks any of "
+                            f"{sorted(VISUAL_MODALITY_TAGS)} — visual_gold is for "
+                            "visual-bearing examples only; transcript-only "
+                            "examples belong in dev_gold."
+                        )
 
         # boundary audit
         audit_file = corpus_dir / "boundary_audit.jsonl"

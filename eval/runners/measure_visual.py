@@ -72,6 +72,11 @@ _VISUAL_GOLD_PATH = (
 # default loudly; do not silently tune.
 FRAME_SAMPLE_EVERY_SEC = 10.0
 
+# A visual_gold entry MUST carry at least one of these modality tags.
+# Transcript-only / audio-only examples belong in dev_gold, not here —
+# scoring them via the visual channel would be measurement-mode confusion.
+VISUAL_MODALITIES = frozenset({"slide", "screen_code", "diagram", "whiteboard"})
+
 
 @dataclass(frozen=True)
 class VisualGoldQuery:
@@ -88,16 +93,31 @@ def load_visual_gold(path: Path = _VISUAL_GOLD_PATH) -> list[VisualGoldQuery]:
     Empty file → empty list (the runner reports "0 visual gold examples,
     skipping" rather than zeroing the metric). Synthesis rows are not
     blended into visual metrics — they are reported separately if/when
-    visual synthesis examples land (none today)."""
+    visual synthesis examples land (none today).
+
+    Raises ``ValueError`` if any single_clip row's ``modality`` does not
+    intersect ``VISUAL_MODALITIES``. The validator enforces the same
+    rule on committed visual_gold.jsonl, but the loader re-checks at
+    runtime because tests and tmp-fixture paths bypass the validator.
+    Raising loudly here means a misclassified entry surfaces before
+    measurement, never after writing partial eval_results."""
     if not path.exists():
         return []
     queries: list[VisualGoldQuery] = []
+    modality_errors: list[str] = []
     for raw in path.read_text().splitlines():
         line = raw.strip()
         if not line:
             continue
         ex = json.loads(line)
         if ex.get("question_type") != "single_clip":
+            continue
+        modality = ex.get("modality") or []
+        if not (set(modality) & VISUAL_MODALITIES):
+            modality_errors.append(
+                f"id={ex.get('id', '?')}: modality={modality} lacks any of "
+                f"{sorted(VISUAL_MODALITIES)} (visual_gold is for visual-bearing examples only)"
+            )
             continue
         span = ex["gold_spans"][0]
         queries.append(
@@ -108,6 +128,11 @@ def load_visual_gold(path: Path = _VISUAL_GOLD_PATH) -> list[VisualGoldQuery]:
                 start_sec=float(span["start_sec"]),
                 end_sec=float(span["end_sec"]),
             )
+        )
+    if modality_errors:
+        raise ValueError(
+            f"{path}: {len(modality_errors)} visual_gold entry/entries lack "
+            f"a visual modality tag:\n  - " + "\n  - ".join(modality_errors)
         )
     return queries
 

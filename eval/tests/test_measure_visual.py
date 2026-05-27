@@ -314,3 +314,183 @@ def test_load_visual_gold_skips_non_single_clip(tmp_path):
     p.write_text("\n".join(_json.dumps(r) for r in rows))
     loaded = load_visual_gold(p)
     assert [q.example_id for q in loaded] == ["vis-1"]
+
+
+def test_load_visual_gold_rejects_transcript_only_modality(tmp_path):
+    """A visual_gold entry must include at least one of {slide,
+    screen_code, diagram, whiteboard}. A transcript-only entry is a
+    measurement-mode mistake — it belongs in dev_gold."""
+    import json as _json
+
+    p = tmp_path / "visual_gold.jsonl"
+    p.write_text(
+        _json.dumps(
+            {
+                "id": "bad-vis",
+                "question": "?" * 16,
+                "video_id": "v1",
+                "split": "dev",
+                "question_type": "single_clip",
+                "gold_spans": [{"start_sec": 100, "end_sec": 120}],
+                "modality": ["transcript"],  # NO visual tag
+                "difficulty": "easy",
+                "curator": "tester",
+                "curated_at": "2026-05-27T00:00:00Z",
+                "verified": True,
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="lacks any of"):
+        load_visual_gold(p)
+
+
+def test_load_visual_gold_accepts_visual_plus_transcript(tmp_path):
+    """A slide-bearing example may also tag transcript — the rule is
+    'at least one visual tag', not 'visual only'."""
+    import json as _json
+
+    p = tmp_path / "visual_gold.jsonl"
+    p.write_text(
+        _json.dumps(
+            {
+                "id": "vis-and-text",
+                "question": "?" * 16,
+                "video_id": "v1",
+                "split": "dev",
+                "question_type": "single_clip",
+                "gold_spans": [{"start_sec": 100, "end_sec": 120}],
+                "modality": ["slide", "transcript"],
+                "difficulty": "easy",
+                "curator": "tester",
+                "curated_at": "2026-05-27T00:00:00Z",
+                "verified": True,
+            }
+        )
+    )
+    loaded = load_visual_gold(p)
+    assert [q.example_id for q in loaded] == ["vis-and-text"]
+
+
+# ---- resolve_visual_candidate_id -----------------------------------------
+
+
+def test_resolve_visual_candidate_id_happy_path():
+    """The yaml in the repo today has exactly one local candidate
+    (colqwen2.5) under candidates.visual_retrieval.options."""
+    import yaml as _yaml
+
+    from eval.runners.run_visual_eval import _CONFIG_PATH, resolve_visual_candidate_id
+
+    cfg = _yaml.safe_load(_CONFIG_PATH.read_text())
+    assert resolve_visual_candidate_id(cfg) == "colqwen2.5"
+
+
+def test_resolve_visual_candidate_id_zero_local_raises():
+    from eval.runners.run_visual_eval import resolve_visual_candidate_id
+
+    cfg = {
+        "candidates": {
+            "visual_retrieval": {
+                "options": [
+                    {"id": "hosted-only", "provider": "google", "family": "x"},
+                ]
+            }
+        }
+    }
+    with pytest.raises(RuntimeError, match="Expected exactly 1 local"):
+        resolve_visual_candidate_id(cfg)
+
+
+def test_resolve_visual_candidate_id_two_local_raises():
+    from eval.runners.run_visual_eval import resolve_visual_candidate_id
+
+    cfg = {
+        "candidates": {
+            "visual_retrieval": {
+                "options": [
+                    {"id": "colqwen-a", "provider": "local", "family": "colpali"},
+                    {"id": "colqwen-b", "provider": "local", "family": "colpali"},
+                ]
+            }
+        }
+    }
+    with pytest.raises(RuntimeError, match="Expected exactly 1 local"):
+        resolve_visual_candidate_id(cfg)
+
+
+def test_scripts_shim_delegates_to_canonical_main():
+    """The scripts/run_visual_eval.py back-compat shim must import
+    main() from eval.runners.run_visual_eval, NOT define its own."""
+    import scripts.run_visual_eval as shim
+    from eval.runners.run_visual_eval import main as canonical_main
+
+    assert shim.main is canonical_main, (
+        "shim main must be the canonical eval.runners.run_visual_eval.main "
+        "(no duplicated logic)"
+    )
+
+
+# ---- validator: visual_gold modality enforcement -------------------------
+
+
+def test_validator_rejects_visual_gold_without_visual_modality(tmp_path, monkeypatch, capsys):
+    """validate_corpora must reject a visual_gold.jsonl entry that has
+    no visual modality tag — symmetric with load_visual_gold's runtime
+    guard so the rule fires at commit time AND at runtime."""
+    import json as _json
+
+    import yaml as _yaml
+
+    from eval import validate as v
+
+    corpus = tmp_path / "corpora" / "test_visual_modality"
+    corpus.mkdir(parents=True)
+    transcript = tmp_path / "transcripts" / "v1.vtt"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("WEBVTT\n\n00:00.000 --> 00:01.000\nfake\n")
+    import hashlib as _hashlib
+
+    sha = _hashlib.sha256(transcript.read_bytes()).hexdigest()
+    (corpus / "talks.yaml").write_text(
+        _yaml.safe_dump(
+            [
+                {
+                    "video_id": "v1",
+                    "title": "t",
+                    "speaker": "s",
+                    "url": "https://example.com/v1",
+                    "duration_sec": 60,
+                    "format_tags": ["slides_heavy"],
+                    "license": "youtube_standard",
+                    "captions_source": "youtube_auto",
+                    "transcript_path": str(transcript.relative_to(tmp_path)),
+                    "transcript_sha256": sha,
+                    "accessed_at": "2026-05-27T00:00:00Z",
+                }
+            ]
+        )
+    )
+    bad_visual = {
+        "id": "bad-vis",
+        "question": "?" * 16,
+        "video_id": "v1",
+        "split": "dev",
+        "question_type": "single_clip",
+        "gold_spans": [{"start_sec": 100, "end_sec": 120}],
+        "modality": ["transcript"],  # no visual tag
+        "difficulty": "easy",
+        "curator": "tester",
+        "curated_at": "2026-05-27T00:00:00Z",
+        "verified": True,
+    }
+    (corpus / "visual_gold.jsonl").write_text(_json.dumps(bad_visual))
+
+    monkeypatch.setattr(v, "CORPORA_DIR", tmp_path / "corpora")
+    monkeypatch.setattr(v, "PROJECT_ROOT", tmp_path)
+    # The model_candidates check looks at v.CONFIG_DIR for the yaml; the
+    # real project yaml passes, so leave it alone.
+
+    rc = v.validate_corpora(strict=False)
+    out = capsys.readouterr().out
+    assert rc != 0, f"validator should fail; output was:\n{out}"
+    assert "visual_gold entry" in out and "lacks any of" in out, out
