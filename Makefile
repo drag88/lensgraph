@@ -1,4 +1,4 @@
-.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean db-up db-down db-build db-verify-ext db-migrate db-reset logs ingest ingest-all bakeoff-prep answer
+.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean db-up db-down db-build db-verify-ext db-migrate db-reset logs ingest ingest-all bakeoff-prep answer fetch-video fetch-videos
 
 CORPUS ?= ai_engineering_v0
 
@@ -21,6 +21,8 @@ help:
 	@echo "  logs                     tail worker log ($$LENSGRAPH_LOG_PATH or default)"
 	@echo "  ingest                   ingest one video by id (VIDEO_ID=<id>) via local transcripts"
 	@echo "  ingest-all               ingest a whole corpus (CORPUS=<name>) via local transcripts"
+	@echo "  fetch-video              yt-dlp one source MP4 for VIDEO_ID under videos/<corpus>/ (ADR 005)"
+	@echo "  fetch-videos             yt-dlp every source MP4 for CORPUS (skips files already on disk)"
 	@echo "  bakeoff-prep             report chunks/embeds readiness for corpus (CORPUS=<name>)"
 
 install:
@@ -84,6 +86,12 @@ ingest:
 
 ingest-all:
 	uv run python -m ingest.cli_all --corpus $(CORPUS)
+
+fetch-video:
+	uv run python -m scripts.fetch_video --corpus $(CORPUS) --video-id $(VIDEO_ID)
+
+fetch-videos:
+	uv run python -m scripts.fetch_video --corpus $(CORPUS) --corpus-all
 
 bakeoff-prep:
 	uv run python -m scripts.bakeoff_prep --corpus $(CORPUS)

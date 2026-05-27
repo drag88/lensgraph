@@ -1,6 +1,12 @@
 # ADR 005 — Chapter-slice video capture and frame-sampling resolution
 
-**Status:** Proposed (2026-05-27)
+**Status:** Accepted (2026-05-27). Verified end-to-end on `aie_sg_2026_d2_arize_alyx` (chapter
+`[516, 1494]` of source `m12vGjfbNlo`): yt-dlp produced a 39 MB file (vs projected 5–15 GB
+full-stream), all 98 chapter frames sampled cleanly, and the resulting ColQwen patches drove the
+first real `visual_eval` run at commit `ec7b5b7`. Reproducibility tooling
+(`scripts/fetch_video.py`, `make fetch-video` / `make fetch-videos`) landed alongside this status
+flip.
+
 **Relates to:** ADR 003 (conference-talks corpus), the `frames_handler` / `frames.sample`
 contract, and the chapter-slice schema fields on `talks.yaml`
 (`source_video_id`, `source_start_sec`, `source_end_sec`).
@@ -128,13 +134,24 @@ source, with the trimmed file written to the existing
 change to `frames_handler` or `frames.sample`. The 30 s tail-pad protects
 against keyframe-aligned cuts truncating the last sampled frame.
 
-For the Arize chapter currently mid-download with `*0-1500`: that download is
-correct in shape but 6 s short of the chapter end (`source_end_sec = 1494` +
-30 s pad = 1524). **Cancel the in-flight job, re-run with `*0-1524`.** The
-extra 24 s of download is rounding error against the 1500 s already chosen,
-and it removes the risk that the last sampled frame at
-`t = source_start_sec + 970 s = 1486 s` lands inside the keyframe-aligned
-truncation zone.
+For the Arize chapter the in-flight download used `*0-1500`. **Reconciliation —
+no re-fetch needed for this specific chapter.** The 1500 s file covered
+`[516, 1494]` cleanly: at `every_sec = 10` the last sampled frame within the
+chapter lands at `source_start_sec + 970 s = 1486 s` (the next would be at
+1496 s, outside the chapter). With the file extending to 1500 s, ffmpeg seeks
+to 516 and reads through 1494 without crossing the trimmed-file boundary, and
+all 98 expected frames are present (verified: `SELECT max(frame_sec) FROM frames
+WHERE video_id='aie_sg_2026_d2_arize_alyx'` returns 970 — i.e. the full
+[0, 970] talk-relative grid is populated).
+
+**The formal pattern remains `*0-<max(source_end_sec) + 30>` (= `*0-1524`
+for Arize).** The 30 s pad is defence-in-depth against keyframe-aligned cuts
+truncating the last few seconds of the segment. The 1500 s download succeeded
+in this case because the every_sec=10 cadence happened to put the last frame
+8 s before the chapter end; a chapter whose end_sec aligned closer to a
+multiple of `every_sec` could fall inside the truncation zone with only a 6 s
+pad. `scripts/fetch_video.py` always emits the `+30 s` form, so future
+operators don't have to think about this.
 
 **Frame-sample resolution: download at 720p (yt-dlp format
 `bv*[height<=720]+ba/b[height<=720]`).** Rationale below; this is the one
@@ -316,25 +333,43 @@ would drift.
   Arize download; document the verification in the slice that lands the
   fetch script.
 
-## Implementation slice (minimum diff)
+## Implementation slice — landed
 
-Do not implement in this ADR. Listed for the follow-up PR:
+The minimum-diff slice from v1 of this ADR landed alongside the Accepted
+status flip:
 
-- **`scripts/fetch_video.py`** (new). ~80 lines. Parses `talks.yaml`, groups
-  sliced talks by `source_video_id`, builds the right yt-dlp command per
-  group, runs it via `subprocess.run`. Idempotent (skips existing files
-  unless `--force`).
-- **`Makefile`** — two new targets, `fetch-video` and `fetch-videos`,
-  mirroring `ingest` / `ingest-all`. ~6 lines.
-- **`eval/curation/playbook.md`** — append a "Pull the source video" step
-  under Per-talk workflow §1 pointing at `make fetch-video`. ~5 lines.
-- **`docs/architecture.md`** — one-line addition under the Ingestion data
-  flow box noting that chapter-sliced sources are fetched via
-  `--download-sections '*0-<max_end+30>'`. ~2 lines.
-- **Verification step before landing:** print
-  `ColQwen2_5_Processor.from_pretrained(...).image_processor.{min_pixels,
-  max_pixels}` and confirm 720p falls in the expected band; if not, switch
-  the script's `-f` selector accordingly and amend this ADR.
+- **`scripts/fetch_video.py`** *(landed)* — parses `talks.yaml`, groups
+  sliced talks by `source_video_id`, builds one yt-dlp command per
+  physical file (full-stream for non-sliced talks; `--download-sections
+  '*0-<max(source_end_sec)+30>'` for sliced groups). Strips chapter-start
+  `?t=` hints from the URL while preserving `v=<id>`. Idempotent: skips
+  existing files unless `--force`. Prints the exact command per video
+  so an operator can copy-paste manually if the script breaks.
+- **`Makefile`** *(landed)* — `make fetch-video VIDEO_ID=...` and
+  `make fetch-videos` (mirrors `make ingest` / `make ingest-all`
+  ergonomics).
+- **`eval/tests/test_fetch_video.py`** *(landed)* — 9 fast unit tests
+  covering: full-video plain yt-dlp path, chapter group union-end +
+  safety pad, lone-chapter padding, URL query stripping, corpus-all
+  one-per-source aggregation, file-exists skip + `--force` override,
+  unknown video_id raise, and a `yt-dlp` availability check (so the
+  test suite fails loudly when the binary is not on PATH).
+
+**Still owed — not part of this slice.** Recorded here so the next
+operator knows they exist:
+
+- **`eval/curation/playbook.md`** — append a "Pull the source video"
+  step pointing at `make fetch-video`. Not yet added.
+- **`docs/architecture.md`** — one-line addition under the Ingestion
+  data flow box. Not yet added.
+- **ColQwen2.5 processor band verification.** `ColQwen2_5_Processor.
+  from_pretrained(...).image_processor.{min_pixels, max_pixels}` against
+  the 720p PNG dimensions. The first real visual_eval run at
+  `ec7b5b7` showed standalone visual recall at 1/8, which is below
+  expectation; verifying the processor band is the cheapest next
+  investigation. If 720p PNGs are being aggressively downsampled,
+  switch the `YT_DLP_FORMAT` selector in `scripts/fetch_video.py` to
+  the next-higher tier (1080p) or document the actual sweet spot.
 
 No changes to `ingest/handlers.py`, `ingest/frames.py`,
 `db/repos/talks.py`, `eval/schemas/talk.schema.json`,
@@ -357,6 +392,14 @@ No changes to `ingest/handlers.py`, `ingest/frames.py`,
   table.
 
 ## Changelog
+
+**2026-05-27 (v2):** Status flipped Proposed → Accepted after end-to-end
+verification on Arize. Reconciled `*0-1500` vs `*0-1524` (1500 was OK for
+this chapter's cadence; the +30 s pattern remains the documented norm and
+is what `scripts/fetch_video.py` emits). Implementation slice landed:
+`scripts/fetch_video.py`, `make fetch-video` / `make fetch-videos`, fast
+test coverage. Playbook + architecture-doc updates and the ColQwen
+processor-band verification are still owed and listed explicitly.
 
 **2026-05-27 (v1):** Initial proposal. Locks in
 `yt-dlp --download-sections '*0-<max(source_end_sec)+30>'` for chapter-sliced
