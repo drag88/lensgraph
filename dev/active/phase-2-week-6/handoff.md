@@ -22,17 +22,20 @@ Vector-best = **1.00** ≥ 0.75 minimum. `bge-m3-all-channels` cleared on the fi
 
 The single `rrf_4ch` failure is `sally-staying-on-task-attention` — dense and multivec both put the gold chunk in their top-5, but BM25's contributions to the fused list pushed it past rank 5. Likely a small-corpus RRF artifact; revisit at v1 scale before tuning `RRF_K`.
 
-## Outcome — Visual retrieval eval (separate gate, FIRST REAL RUN)
+## Outcome — Visual retrieval eval (separate gate, two runs; lift NON-ACTIONABLE)
 
-ColQwen2.5 visual retrieval ran end-to-end against 8 verified visual_gold examples on 529 ingested frames (~310 patches each) across the 3 talks. Run id `visual-eval-3d5384cd6446` (`code_path='visual_eval'`).
+ColQwen2.5 visual retrieval ran end-to-end twice this session against 529 ingested frames + 163,990 ColQwen patches across the 3 talks:
 
-| Metric | Value | Counts |
-|---|---:|---|
-| `VisualFrameRecall@5` | **0.125** | 1/8 |
-| `VisualChunkTR@5` | **0.125** | 1/8 |
-| `VisualLift@5` (5-ch w/ visual vs 4-ch text-only) | **0.0 pp** | with: 8/8 · without: 8/8 |
+| Run | n | frame_recall@5 | chunk_tr@5 | lift |
+|---|---:|---:|---:|---:|
+| `visual-eval-3d5384cd6446` (first run, 8 text-saturated examples) | 8 | 0.125 | 0.125 | 0.0 pp (8/8 vs 8/8) |
+| `visual-eval-8b9fecfbf6b4` (second run, 18 total — adds 10 visual-required tagged rows) | 18 | 0.056 | 0.111 | -5.56 pp (17/18 vs 18/18) |
 
-Headline reading: visual lift is 0 pp **but the test is pinned by construction** — bakeoff #1's 4-channel text RRF already passes 8/8 on these examples, so this corpus cannot measure whether the visual channel rescues text-failure cases. Standalone visual recall (1/8 frame, 1/8 chunk) is below expectation; ADR 005 already flagged the ColQwen processor `min_pixels` / `max_pixels` band as unverified, which may be one cause. Full analysis + per-example breakdown + reproducibility commands in `eval/reports/2026-05-27_visual_eval/methodology.mdx`. **No model swap is justified by this run** — ADR 004 v3.1 has no visual minimum encoded, and removing ColQwen on text-saturated lift would be a methodology mistake.
+**Lift is non-actionable.** The review-fix acceptance gate — "text-only baseline misses at least one example, otherwise label lift non-actionable" — **fails on both runs**: text RRF passes 18/18 across the union of text-saturated and visual-required slices. Adding the visual channel hurts on one visual-required example (`visual-required-google-adk-resumability-config-code` — text catches it, visual fusion displaces it). The aggregate -5.56 pp is exploratory only; no model swap, no candidate change, no production decision is justified by these numbers.
+
+**Why even visual-required couldn't break text saturation.** TR@5 measures span coverage, not answer-bearing-ness. Even when the answer-bearing CONTENT lives only on the slide, the speaker is talking around that topic in the same window — so text channels surface the chunk topically. The eval needs an answer-grounded metric (e.g. faithfulness judge on the retrieved chunk's text) before lift can become actionable. That's a bakeoff #2+ concern.
+
+Full analysis, per-example breakdown, slice tables, and reproducibility in `eval/reports/2026-05-27_visual_eval/methodology.mdx`.
 
 Substrate that made the run possible:
 

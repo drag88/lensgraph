@@ -1,145 +1,154 @@
-# Visual Retrieval Eval — First Real Run (2026-05-27)
+# Visual Retrieval Eval — Second Run with visual-required slice (2026-05-27)
 
-**Status:** ✅ RUN. First real-numbers pass of the visual eval gate.
-**Run ID:** `visual-eval-3d5384cd6446`
+**Status:** ✅ RUN — superseded the earlier 8-example run after adding 10 visual-required examples.
+**Latest run ID:** `visual-eval-8b9fecfbf6b4` (18 examples)
+**Prior run ID:** `visual-eval-3d5384cd6446` (8 examples; kept in DB for the historical numbers).
 **Component:** `visual_retrieval` (ColQwen2.5 via `colpali-engine`)
-**Candidate id:** `colqwen2.5` (resolved from `eval/config/model_candidates.yaml::candidates.visual_retrieval.options` filtered to `provider == 'local'`)
-**Eval code path:** `eval_runs.code_path = 'visual_eval'` (distinct from bakeoff #1's `'embeddings_bakeoff'`).
+**Candidate id:** `colqwen2.5` (resolved from yaml; not hardcoded)
+**Eval code path:** `eval_runs.code_path = 'visual_eval'`
+**Lift actionability:** ❌ **NON-ACTIONABLE.** Acceptance gate from the review spec — "text-only baseline should miss at least one example, otherwise the run must label lift as non-actionable" — **was not met**: the 4-channel text RRF passes 18/18 across the union of text-saturated and visual-required examples. The visual lift signal below is exploratory only and is **not** a production-value measurement.
 
-## TL;DR
+## Why two runs
 
-ColQwen2.5 visual retrieval ran end-to-end against 8 verified visual_gold examples on 529 ingested frames (~310 patches each) across 3 talks. **Standalone visual recall is weak on this corpus (1/8 chunk TR@5, 1/8 frame recall@5).** **Visual lift over the 4-channel text stack is 0 pp** — but that result is methodologically pinned: the 4-channel text RRF already passes 8/8 on these examples (text channels saturate), so this corpus cannot measure whether visual fusion helps when text fails. Bakeoff #1 already showed text channels are excellent here (vector-best TR@5 = 1.00 on dev_gold).
+The first run (`visual-eval-3d5384cd6446`) measured 8 visual_gold rows that were curated to have visual answer-bearing content but whose questions still mostly resolved against the transcript. Result: lift = 0 pp, pinned by text saturation. The review feedback called this out and asked for a "visual-required" slice where the answer lives on the slide and **not** verbatim in the transcript. This run adds 10 such rows (3 per-talk subagents curating against the existing frame evidence; transcript-grep verification per row in `eval/curation/visual_gold_review/2026-05-27_required/`). Rows are tagged `["visual-required", ...]` in `visual_gold.jsonl` so the eval can be sliced by tag without a runner change.
 
-No visual quality gate is encoded in ADR 004 v3.1, so this is **not a lock-or-fail decision** — it is a quality measurement that informs whether ColQwen is earning its keep in the production fusion. Today's signal is "doesn't help on text-saturated examples; on its own, weaker than expected; insufficient evidence to remove it" — needs visual-required-only curation in v1 before a definitive call.
-
-## Per-channel numbers (n = 8 single_clip visual_gold examples)
+## Aggregate numbers (n = 18, all visual_gold examples)
 
 | Metric | Value | Counts |
 |---|---:|---|
-| `VisualFrameRecall@5` (pooled HNSW prefilter, frame_sec ± 10s in span) | **0.125** | 1/8 |
-| `VisualChunkTR@5` (full 3-stage: pooled prefilter → frame→chunk → MaxSim refine) | **0.125** | 1/8 |
-| `VisualLift@5` (with vs without visual in 5-ch RRF) | **0.0 pp** | with: 8/8 · without: 8/8 |
+| `VisualFrameRecall@5` | **0.056** | 1/18 |
+| `VisualChunkTR@5` | **0.111** | 2/18 |
+| `VisualLift@5` (5-ch w/ visual vs 4-ch text-only) | **-5.56 pp** | with: 17/18 · without: 18/18 |
 
-The single chunk pass (`visual-tengyu-retrieval-accuracy-plot`) and the single frame pass (`visual-sally-large-json-composable-tools`) are **different examples** — no example passed both.
+## Sliced numbers
+
+### Text-saturated slice (n = 8, original visual_gold rows from `0d646da`)
+
+| Metric | Value |
+|---|---:|
+| `VisualChunkTR@5` | 1/8 |
+| `VisualFrameRecall@5` | 1/8 |
+| Lift (with vs without) | **0.0 pp** (8/8 vs 8/8) |
+
+Identical to the first run (`visual-eval-3d5384cd6446`). Lift is 0 by construction: text retrieves the right chunk on every example.
+
+### Visual-required slice (n = 10, new rows tagged `visual-required`)
+
+| Metric | Value |
+|---|---:|
+| `VisualChunkTR@5` | 1/10 |
+| `VisualFrameRecall@5` | 1/10 |
+| Lift (with vs without) | **-10.0 pp** (9/10 vs 10/10) |
+
+The expected outcome was "text-only misses at least one" → lift becomes measurable in the positive direction. **What we got: text-only catches all 10, and adding the visual channel actually displaces the right chunk on one example.** Concretely: `visual-required-google-adk-resumability-config-code` (gold span [2010, 2030] on `nXafozNIk3c`) — text RRF puts the gold chunk in its top 5, but the 5-channel RRF (with visual added) does not. ColQwen's visual contribution outranks the text-found chunk on this query.
+
+This is not "ColQwen is broken" — n=10 is small, and one regression on a tightly-specific code question is within noise. But it is a useful exploratory observation: in the regime where text retrieval already saturates, adding a fifth channel via vanilla RRF is **at best neutral** and can be slightly negative.
+
+## Why the acceptance gate failed
+
+The acceptance criteria asked for examples where text-only RRF misses. We curated 10 visual-required questions whose answers are demonstrably NOT in the transcript verbatim (per-row transcript-grep evidence in `eval/curation/visual_gold_review/2026-05-27_required/*/notes.md`). All 10 still pass under text-only RRF because of a **measurement-model mismatch**:
+
+- The TR@5 / open-interval overlap metric measures "did the retriever surface a chunk that overlaps the gold time window?", not "does the surfaced chunk contain the answer-bearing text?".
+- Even when the answer-bearing CONTENT is visual (on the slide), the speaker is TALKING about that topic during that span. The chunk's transcript text is therefore topically dense around the question's keywords. Text channels (dense + sparse + multivec + BM25) surface that chunk on topicality alone.
+- The gold span overlap test then passes, even though the chunk's text would not, on its own, answer the visual-required question.
+
+**Implication for the visual eval design.** To make lift actionable on this kind of corpus, the next iteration needs a metric that goes beyond span coverage. Two candidates worth scoping next:
+
+1. **Answer-grounded eval.** Add a faithfulness judge that scores whether the retrieved chunk's TEXT actually contains the answer. For visual-required examples, the judge should fail the text-only path even when TR@5 passes. Lift then measures "did adding visual rescue the cases where text retrieval is topical-but-not-answer-bearing?"
+2. **Visual-only baseline.** Run `visual.retrieve` standalone on the visual-required slice and report its standalone numbers — already done above (1/10 chunk_tr@5, 1/10 frame_recall@5), but pair it with a transcript-anchored visual-required corpus where the visible content has zero topical overlap with the gold-span transcript (very hard to engineer naturally on conference talks).
+
+Both are bakeoff #2-or-later concerns. For now, **lift remains non-actionable on this corpus** and no model swap, no candidate change, no production decision is justified by these numbers.
 
 ## Per-example breakdown
 
-| Example | frame_pass | chunk_pass | with_visual | without_visual |
-|---|:---:|:---:|:---:|:---:|
-| `visual-tengyu-library-analogy-slide` | ✗ | ✗ | ✓ | ✓ |
-| `visual-tengyu-retrieval-accuracy-plot` | ✗ | **✓** | ✓ | ✓ |
-| `visual-tengyu-matryoshka-quantization-slide` | ✗ | ✗ | ✓ | ✓ |
-| `visual-tengyu-query-document-enhancement-slide` | ✗ | ✗ | ✓ | ✓ |
-| `visual-sally-planning-tools-states-finish-gate` | ✗ | ✗ | ✓ | ✓ |
-| `visual-sally-large-json-composable-tools` | **✓** | ✗ | ✓ | ✓ |
-| `visual-google-agent-cli-getting-started-screen` | ✗ | ✗ | ✓ | ✓ |
-| `visual-google-adk2-resume-stopped-agents-screen` | ✗ | ✗ | ✓ | ✓ |
+| Example | tag | frame_pass | chunk_pass | with_visual | without_visual |
+|---|---|:---:|:---:|:---:|:---:|
+| visual-tengyu-library-analogy-slide | text-saturated | ✗ | ✗ | ✓ | ✓ |
+| visual-tengyu-retrieval-accuracy-plot | text-saturated | ✗ | **✓** | ✓ | ✓ |
+| visual-tengyu-matryoshka-quantization-slide | text-saturated | ✗ | ✗ | ✓ | ✓ |
+| visual-tengyu-query-document-enhancement-slide | text-saturated | ✗ | ✗ | ✓ | ✓ |
+| visual-sally-planning-tools-states-finish-gate | text-saturated | ✗ | ✗ | ✓ | ✓ |
+| visual-sally-large-json-composable-tools | text-saturated | **✓** | ✗ | ✓ | ✓ |
+| visual-google-agent-cli-getting-started-screen | text-saturated | ✗ | ✗ | ✓ | ✓ |
+| visual-google-adk2-resume-stopped-agents-screen | text-saturated | ✗ | ✗ | ✓ | ✓ |
+| visual-required-tengyu-accuracy-plot-axes | required | ✗ | **✓** | ✓ | ✓ |
+| visual-required-tengyu-accuracy-plot-models | required | ✗ | ✗ | ✓ | ✓ |
+| visual-required-tengyu-matryoshka-chart-axes | required | ✗ | ✗ | ✓ | ✓ |
+| visual-required-tengyu-hybrid-search-diagram | required | ✗ | ✗ | ✓ | ✓ |
+| visual-required-sally-current-plan-block | required | ✗ | ✗ | ✓ | ✓ |
+| visual-required-sally-jq-grepjson-queries | required | ✗ | ✗ | ✓ | ✓ |
+| visual-required-sally-lessons-recoverable-exceptions | required | **✓** | ✗ | ✓ | ✓ |
+| visual-required-google-agents-cli-seven-skills-list | required | ✗ | ✗ | ✓ | ✓ |
+| visual-required-google-adk-resumability-config-code | required | ✗ | ✗ | **✗** | ✓ |
+| visual-required-google-adk-resume-version-and-caveat | required | ✗ | ✗ | ✓ | ✓ |
 
-## What the two passes tell us
+**The single -10pp regression on the visual-required slice is the `adk-resumability-config-code` row** — the only row in the corpus where adding the visual channel hurt the fused retrieval. Worth a single-row deep-dive in v1; not actionable now.
 
-**`tengyu-retrieval-accuracy-plot` — chunk passed, frame did not.** The pooled-vector prefilter (stage 1) put no in-span frame in its top 5, but the 3-stage MaxSim refine over the candidate chunks pulled in chunks 16 (374.96–404.64) and 17 (399.92–431.67) at ranks 4 and 1 respectively — both overlap the gold span [305, 410]. This validates the design intent of the 3-stage pipeline: **MaxSim over patches inside a wider candidate set can surface a chunk that the pooled-vector pre-rank missed.** It also says the pooled-mean is a coarse signal on its own for this query distribution.
+## What does NOT change
 
-**`sally-large-json-composable-tools` — frame passed, chunk did not.** Three frames inside the gold span ranked top-1, top-2, top-3 by pooled cosine (frame_sec 480, 490, 540 in [460, 615]). But the 3-stage chunk path put no overlapping chunk in its top 5. Possible: those frames mapped via the half-open `[chunk.start, chunk.end)` interval to chunks that ARE in the gold span, but MaxSim then re-ranked OTHER chunks higher (a chunk with more candidate patches contributed by the prefilter outranks one with the gold-span frames). Worth digging into when v1 visual gold is bigger — this is the kind of edge that the chunking ablation needs to surface.
+- ADR 004 v3.1 — no model swap is justified by either run. ColQwen2.5 stays in the production loop because (a) the eval gate is quality, not selection, and (b) the corpus cannot tell us whether visual fusion rescues text-failure cases.
+- ColQwen processor `min_pixels` / `max_pixels` verification (flagged in ADR 005) — still owed. The standalone visual numbers (frame_recall 1/18, chunk_tr 2/18) might improve if 720p PNGs are being aggressively downsampled past slide-text legibility.
+- The runner — `eval/runners/run_visual_eval.py` is unchanged from `d20c024`. The visual-required slice is computed in this MDX from the per_example data, not by a slicing flag.
 
-## What the lift says
+## DB state at run time
 
-`with_visual_pass_rate = 1.00`, `without_visual_pass_rate = 1.00`, **`lift = 0.0 pp`**. The 4-channel text RRF already retrieves the gold chunk in its top 5 on every example, so adding the visual channel as a 5th cannot change the pass rate. **This corpus cannot answer "does visual fusion help?"** — by construction, text retrieval is saturated. The honest framing in the writeup: "visual retrieval does no harm to the production stack on these examples; whether it helps in cases where text fails is a separate question requiring visual-required-only gold examples."
+| video_id | pooled frames | frame_patches |
+|---|---:|---:|
+| nXafozNIk3c | 318 | 98,580 |
+| W_CYk2ogcDI | 113 | 35,030 |
+| aie_sg_2026_d2_arize_alyx | 98 | 30,380 |
+| **total** | **529** | **163,990** |
 
-## What this measurement does NOT decide
-
-- **ColQwen is not removed from the production loop on this evidence.** 8 examples is small-N. Removing the visual channel based on "lift = 0 on a text-saturated set" is a methodology mistake — the lift was measured under conditions where it could not show.
-- **No model swap is justified.** ADR 004 v3.1 has no visual minimum encoded; this run does not propose adding one. Adding a minimum would require a curated "visual-required" gold set first.
-- **No "ColQwen is broken" conclusion.** 1/8 on standalone recall on natural-language questions against slide images is below expectation, but the failure mode (pooled prefilter misses, MaxSim sometimes catches) is consistent with the ColQwen2.5 design and not an obvious bug.
-
-## What would make the next visual eval more informative
-
-1. **Curate visual-required gold.** Questions where the answer is on the slide and NOT in the transcript (e.g. specific numbers / labels visible in a diagram that the speaker does not quote verbatim). On a visual-required gold set, `without_visual` would drop below 1.0 and `lift` would have measurable signal.
-2. **Tune resolution / encoder config.** ADR 005 flagged the ColQwen processor `min_pixels` / `max_pixels` band as unverified. A 720p capture might be downsampled past slide-text legibility. Print the actual band and verify against the captured PNG dimensions before drawing strong conclusions from these numbers.
-3. **Per-channel rank inspection.** When chunk_pass is False, was the gold chunk at rank 6? rank 50? The current eval records the top-5 only. A richer trace (top-20) would distinguish "near miss" from "not found at all" without re-running the whole pipeline.
-
-## Outputs (this run)
-
-Same eval_runs + eval_results contract as bakeoff #1 (phase-2 hard rule):
-
-- One `eval_runs` row: `code_path='visual_eval'`, `embedding_model_id='colqwen2.5'` (resolved from yaml, not hardcoded), `summary` carrying per-channel scores, lift, n_examples, per-video substrate counts, candidate yaml SHA.
-- 8 `eval_results` rows: one per visual_gold example with `system_output` (gold span + top-5 frames + top-5 chunks the runner actually retrieved) and `metrics` (pass booleans + lift detail).
-- Writes were transactional (single connection, autocommit off, commit-on-success). Same atomicity contract as bakeoff #1 review-fix #2.
-
-```
-eval/reports/2026-05-27_visual_eval/
-├── methodology.mdx     # this file
-├── summary.json        # full dump of eval_runs.summary
-└── per_example.jsonl   # one row per example with top-5 frame + chunk references
-```
-
-## Metrics (definitions, unchanged from the STUB report)
-
-### VisualFrameRecall@k
-Pass if any of the top-k frames from `retrieve.visual.retrieve_frames` satisfies `frame.video_id == gold.video_id AND gold.start_sec - tolerance_sec <= frame.frame_sec <= gold.end_sec + tolerance_sec`. Default `tolerance_sec = FRAME_SAMPLE_EVERY_SEC = 10.0`.
-
-### VisualChunkTR@k
-Pass if any of the top-k chunks from `retrieve.visual.retrieve` overlaps the gold span (open-interval — `chunk.end_sec > gold.start_sec AND chunk.start_sec < gold.end_sec`).
-
-### VisualLift@k
-Per-example pass on `rrf({bm25, dense, sparse, multivec, visual}, top_k=5)` vs `rrf({bm25, dense, sparse, multivec}, top_k=5)`, reported as `(with_rate - without_rate) * 100` in percentage points.
-
-## Substrate (this run)
-
-| video_id | pooled frames | frame_patches rows | source |
-|---|---:|---:|---|
-| `nXafozNIk3c` | 318 | 98,580 | full talk (3179s) |
-| `aie_sg_2026_d2_arize_alyx` | 98 | 30,380 | chapter [516, 1494] of `m12vGjfbNlo` via ADR-005 download-sections pattern |
-| `W_CYk2ogcDI` | 113 | 35,030 | full talk (1128s) |
-| **total** | **529** | **163,990** | |
-
-Frames sampled at `every_sec=10` per `ingest.frames.sample`. ColQwen patches encoded via `ingest.handlers.embed_frames_handler` (one frame per PGMQ message, drained by `scripts/drain_ingest_queue.py ingest_embed_frames`). Wall time for the ColQwen pass: ~30 min on Mac MPS.
+Substrate captured at commit `ec7b5b7` via the ADR 005 chapter-slice pattern (m12vGjfbNlo cut to 39 MB via `--download-sections '*0-1500'`; the formal pattern emitted by `scripts/fetch_video.py` is `*0-<max(source_end_sec)+30>` = `*0-1524` for Arize — both work for this chapter; see ADR 005 §"Reconciliation").
 
 ## Reproducibility
 
 ```bash
-# 1. Fetch source videos (per ADR-005 download-sections pattern for chapter slices)
-yt-dlp -f 'best[height<=720][ext=mp4]/best[height<=720]/best' \
-       --merge-output-format mp4 \
-       -o videos/ai_engineering_v0/nXafozNIk3c.mp4 \
-       https://www.youtube.com/watch?v=nXafozNIk3c
-yt-dlp -f 'best[height<=720][ext=mp4]/best[height<=720]/best' \
-       --merge-output-format mp4 \
-       -o videos/ai_engineering_v0/W_CYk2ogcDI.mp4 \
-       https://www.youtube.com/watch?v=W_CYk2ogcDI
-yt-dlp -f 'best[height<=720][ext=mp4]/best[height<=720]/best' \
-       --download-sections '*0-1524' --merge-output-format mp4 \
-       -o videos/ai_engineering_v0/m12vGjfbNlo.mp4 \
-       https://www.youtube.com/watch?v=m12vGjfbNlo
+# 1. Fetch source videos via the ADR 005 helper (f15b847)
+uv run python -m scripts.fetch_video --corpus ai_engineering_v0 --corpus-all
+# or one at a time:
+make fetch-video VIDEO_ID=W_CYk2ogcDI
 
-# 2. Ingest frames + ColQwen patches (PGMQ pipeline)
+# 2. Ingest frames + ColQwen patches
 make db-up
-uv run python -m ingest.cli nXafozNIk3c          # already-ingested; this just re-enqueues
-uv run python -m ingest.cli aie_sg_2026_d2_arize_alyx
 uv run python -m ingest.cli W_CYk2ogcDI
-uv run python -m scripts.drain_ingest_queue ingest_frames        # ~2 min
-uv run python -m scripts.drain_ingest_queue ingest_embed_frames  # ~30 min on Mac MPS
+uv run python -m ingest.cli aie_sg_2026_d2_arize_alyx
+uv run python -m ingest.cli nXafozNIk3c
+uv run python -m scripts.drain_ingest_queue ingest_frames
+uv run python -m scripts.drain_ingest_queue ingest_embed_frames  # ~30 min Mac MPS
 
-# 3. Run the visual eval
+# 3. Run the eval (writes one eval_runs row + N eval_results rows)
 uv run python -m eval.runners.run_visual_eval
-# → visual_eval written: <run_id> (frame_recall@5=0.125, chunk_tr@5=0.125, n=8)
+# → visual_eval written: <run_id> (frame_recall@5=0.056, chunk_tr@5=0.111, n=18)
 ```
 
-## File map
+## Methodology guardrails (unchanged)
+
+### VisualFrameRecall@k
+Pass if any top-k frame from `retrieve.visual.retrieve_frames` satisfies `frame.video_id == gold.video_id AND gold.start_sec - tolerance_sec <= frame.frame_sec <= gold.end_sec + tolerance_sec`. Default `tolerance_sec = FRAME_SAMPLE_EVERY_SEC = 10.0`.
+
+### VisualChunkTR@k
+Pass if any top-k chunk from `retrieve.visual.retrieve` overlaps the gold span (open-interval).
+
+### VisualLift@k
+Per-example pass on `rrf({bm25, dense, sparse, multivec, visual}, top_k=5)` vs `rrf({bm25, dense, sparse, multivec}, top_k=5)`, reported as `(with_rate - without_rate) * 100` in percentage points. **Actionable iff** the without-visual baseline misses ≥1 example. Today: it does not, so lift is non-actionable on this corpus.
+
+## File map (delta from `ec7b5b7`)
 
 ```
-eval/corpora/ai_engineering_v0/
-├── visual_gold.jsonl                # 8 verified visual entries (commit 0d646da)
-└── (no draft committed — drafts go under *_gold.draft.jsonl per .gitignore)
+eval/corpora/ai_engineering_v0/visual_gold.jsonl
+  - was: 8 rows (text-saturated)
+  - now: 18 rows (8 text-saturated + 10 visual-required tagged ["visual-required", ...])
 
-eval/runners/measure_visual.py       # metric primitives + measure_visual()
-eval/runners/run_visual_eval.py      # canonical runner; eval_runs + eval_results writer
-scripts/run_visual_eval.py           # back-compat shim → eval.runners.run_visual_eval.main
-scripts/drain_ingest_queue.py        # operational driver for PGMQ workers
+eval/curation/visual_gold_review/2026-05-27_required/
+  W_CYk2ogcDI/proposed_visual_required.jsonl + notes.md
+  aie_sg_2026_d2_arize_alyx/proposed_visual_required.jsonl + notes.md
+  nXafozNIk3c/proposed_visual_required.jsonl + notes.md
+  - subagent proposals (one per talk) + transcript-grep evidence per row;
+    promoted rows were copied verbatim into visual_gold.jsonl.
 
-eval/tests/test_measure_visual.py    # fast unit tests for metric primitives + lift
-eval/tests/test_run_visual_eval.py   # slow integration tests (live-DB + per-video substrate)
-
-eval/curation/visual_gold_review/2026-05-27/  # per-talk frame evidence for the 8 verified entries
-docs/decisions/005-chapter-slice-ingest.md    # ADR for chapter-slice video capture
-eval/reports/2026-05-27_visual_eval/methodology.mdx  # this file (RUN, not STUB)
+eval/reports/2026-05-27_visual_eval/
+  methodology.mdx — this file (supersedes the n=8 version)
+  summary.json    — dump of eval_runs.summary for visual-eval-8b9fecfbf6b4
+  per_example.jsonl — 18 rows, one per visual_gold example
 ```

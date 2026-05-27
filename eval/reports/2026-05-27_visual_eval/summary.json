@@ -1,25 +1,49 @@
 {
-  "run_id": "visual-eval-3d5384cd6446",
+  "run_id": "visual-eval-8b9fecfbf6b4",
   "run_date": "2026-05-27",
   "code_path": "visual_eval",
   "embedding_model_id": "colqwen2.5",
   "k": 5,
   "component": "visual_retrieval",
-  "n_examples": 8,
+  "n_examples": 18,
   "per_example": {
     "visual-tengyu-library-analogy-slide": {
       "chunk_pass": false,
       "frame_pass": false
     },
     "visual-tengyu-retrieval-accuracy-plot": {
-      "chunk_pass": true,
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-required-sally-current-plan-block": {
+      "chunk_pass": false,
       "frame_pass": false
     },
     "visual-sally-large-json-composable-tools": {
       "chunk_pass": false,
-      "frame_pass": true
+      "frame_pass": false
+    },
+    "visual-required-sally-jq-grepjson-queries": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-required-tengyu-accuracy-plot-axes": {
+      "chunk_pass": true,
+      "frame_pass": false
+    },
+    "visual-required-tengyu-accuracy-plot-models": {
+      "chunk_pass": false,
+      "frame_pass": false
     },
     "visual-tengyu-matryoshka-quantization-slide": {
+      "chunk_pass": true,
+      "frame_pass": false
+    },
+    "visual-required-tengyu-hybrid-search-diagram": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-required-tengyu-matryoshka-chart-axes": {
       "chunk_pass": false,
       "frame_pass": false
     },
@@ -38,11 +62,27 @@
     "visual-google-adk2-resume-stopped-agents-screen": {
       "chunk_pass": false,
       "frame_pass": false
+    },
+    "visual-required-google-adk-resumability-config-code": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-required-google-agents-cli-seven-skills-list": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-required-google-adk-resume-version-and-caveat": {
+      "chunk_pass": false,
+      "frame_pass": false
+    },
+    "visual-required-sally-lessons-recoverable-exceptions": {
+      "chunk_pass": false,
+      "frame_pass": true
     }
   },
   "visual_lift": {
-    "lift_pp": 0.0,
-    "with_visual_pass_rate": 1.0,
+    "lift_pp": -5.56,
+    "with_visual_pass_rate": 0.9444444444444444,
     "without_visual_pass_rate": 1.0
   },
   "candidate_id": "colqwen2.5",
@@ -62,7 +102,7 @@
       "pooled_frames": 98
     }
   },
-  "visual_chunk_tr_at_k": 0.125,
-  "visual_frame_recall_at_k": 0.125,
+  "visual_chunk_tr_at_k": 0.1111111111111111,
+  "visual_frame_recall_at_k": 0.05555555555555555,
   "candidate_set_yaml_sha256": "f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1"
 }
