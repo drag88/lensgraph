@@ -313,12 +313,16 @@ def test_cli_all_returns_nonzero_when_some_required_videos_missing(
 def test_cli_all_drains_ingest_frames_when_all_required_videos_staged(
     clean_db, tmp_path, monkeypatch, capsys
 ):
-    """All required .mp4 files staged → _drain runs once for ingest_frames
-    AND main exits 0 (text readiness stubbed complete via readiness.for_corpus).
+    """All required .mp4 files staged → _drain runs once for BOTH ingest_frames
+    AND ingest_embed_frames (the slice-2A handler fan-out target) AND main
+    exits 0 (text readiness stubbed complete via readiness.for_corpus).
 
     This is the positive-path regression for the required-videos guard: the
     other tests confirm the gate REJECTS partial/empty staging; this one
-    confirms the gate ADMITS full staging without forcing exit 1."""
+    confirms the gate ADMITS full staging without forcing exit 1. The
+    ingest_embed_frames drain was added in slice-2A (`3fc5ab4`) and shares
+    the required-videos gate — orphaning embed_frames messages on the queue
+    when frames drained would defeat the gate."""
     from ingest.readiness import VideoReadiness
 
     rel, sha = _stage_vtt(tmp_path / "transcripts", "full.vtt")
@@ -380,10 +384,19 @@ def test_cli_all_drains_ingest_frames_when_all_required_videos_staged(
 
     assert exit_code == 0
     assert drained_queues.count("ingest_frames") == 1
-    # Drain order is chunk → embed_text → frames per cli_all.main; assert
-    # the full sequence so a future reorder surfaces here.
-    assert drained_queues == ["ingest_chunk", "ingest_embed_text", "ingest_frames"]
+    assert drained_queues.count("ingest_embed_frames") == 1
+    # Drain order: chunk → embed_text → frames → embed_frames per cli_all.main;
+    # the embed_frames drain MUST land after the frames drain so messages
+    # enqueued by frames_handler are in flight before embed_frames consumes.
+    # Asserting the full sequence so a future reorder surfaces here.
+    assert drained_queues == [
+        "ingest_chunk",
+        "ingest_embed_text",
+        "ingest_frames",
+        "ingest_embed_frames",
+    ]
     assert "drained 0 from ingest_frames" in out
+    assert "drained 0 from ingest_embed_frames" in out
     # The skip-with-warning messages must NOT appear when all required
     # videos are staged.
     assert "skipping ingest_frames drain" not in out
