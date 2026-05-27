@@ -1,6 +1,11 @@
 # Visual Gold Curation Notes - 2026-05-27
 
-Purpose: evidence for the first verified `visual_gold.jsonl` rows.
+Two curation passes landed under this directory:
+
+* **Pass 1 — original (this README + `agent_a/b/c_notes.md` + `agent_a/b/c_proposed_visual_gold.jsonl` + frame `.jpg` evidence).** Produced the first 8 verified `visual_gold.jsonl` rows. Notes below. Commit `0d646da`.
+* **Pass 2 — visual-required slice (`visual_required_notes.md` + `visual_required_proposed.jsonl` per talk).** Re-used the Pass-1 frame evidence to propose 10 additional rows whose answer is on the slide and NOT verbatim in transcript; all 10 promoted with `tags=["visual-required", ...]`. The text-only RRF baseline still covered all 10 (TR@5 measures span coverage, not answer-bearing-ness) so visual lift is labeled NON-ACTIONABLE in the methodology MDX. Commit `5c44735`. See `eval/reports/2026-05-27_visual_eval/methodology.mdx` for the slice + reasoning.
+
+Pass-1 notes follow.
 
 Method:
 - Audited all 10 `dev_gold.jsonl` single-clip examples across the three dev talks.

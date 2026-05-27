@@ -10,7 +10,7 @@
 
 ## Why two runs
 
-The first run (`visual-eval-3d5384cd6446`) measured 8 visual_gold rows that were curated to have visual answer-bearing content but whose questions still mostly resolved against the transcript. Result: lift = 0 pp, pinned by text saturation. The review feedback called this out and asked for a "visual-required" slice where the answer lives on the slide and **not** verbatim in the transcript. This run adds 10 such rows (3 per-talk subagents curating against the existing frame evidence; transcript-grep verification per row in `eval/curation/visual_gold_review/2026-05-27_required/`). Rows are tagged `["visual-required", ...]` in `visual_gold.jsonl` so the eval can be sliced by tag without a runner change.
+The first run (`visual-eval-3d5384cd6446`) measured 8 visual_gold rows that were curated to have visual answer-bearing content but whose questions still mostly resolved against the transcript. Result: lift = 0 pp, pinned by text saturation. The review feedback called this out and asked for a "visual-required" slice where the answer lives on the slide and **not** verbatim in the transcript. This run adds 10 such rows (3 per-talk subagents curating against the existing frame evidence; transcript-grep verification per row in `eval/curation/visual_gold_review/2026-05-27/<video_id>/visual_required_notes.md`). Rows are tagged `["visual-required", ...]` in `visual_gold.jsonl` so the eval can be sliced by tag without a runner change.
 
 ## Aggregate numbers (n = 18, all visual_gold examples)
 
@@ -46,7 +46,7 @@ This is not "ColQwen is broken" — n=10 is small, and one regression on a tight
 
 ## Why the acceptance gate failed
 
-The acceptance criteria asked for examples where text-only RRF misses. We curated 10 visual-required questions whose answers are demonstrably NOT in the transcript verbatim (per-row transcript-grep evidence in `eval/curation/visual_gold_review/2026-05-27_required/*/notes.md`). All 10 still pass under text-only RRF because of a **measurement-model mismatch**:
+The acceptance criteria asked for examples where text-only RRF misses. We curated 10 visual-required questions whose answers are demonstrably NOT in the transcript verbatim (per-row transcript-grep evidence in `eval/curation/visual_gold_review/2026-05-27/*/visual_required_notes.md`). All 10 still pass under text-only RRF because of a **measurement-model mismatch**:
 
 - The TR@5 / open-interval overlap metric measures "did the retriever surface a chunk that overlaps the gold time window?", not "does the surfaced chunk contain the answer-bearing text?".
 - Even when the answer-bearing CONTENT is visual (on the slide), the speaker is TALKING about that topic during that span. The chunk's transcript text is therefore topically dense around the question's keywords. Text channels (dense + sparse + multivec + BM25) surface that chunk on topicality alone.
@@ -140,12 +140,12 @@ eval/corpora/ai_engineering_v0/visual_gold.jsonl
   - was: 8 rows (text-saturated)
   - now: 18 rows (8 text-saturated + 10 visual-required tagged ["visual-required", ...])
 
-eval/curation/visual_gold_review/2026-05-27_required/
-  W_CYk2ogcDI/proposed_visual_required.jsonl + notes.md
-  aie_sg_2026_d2_arize_alyx/proposed_visual_required.jsonl + notes.md
-  nXafozNIk3c/proposed_visual_required.jsonl + notes.md
-  - subagent proposals (one per talk) + transcript-grep evidence per row;
-    promoted rows were copied verbatim into visual_gold.jsonl.
+eval/curation/visual_gold_review/2026-05-27/<video_id>/
+  visual_required_proposed.jsonl  — per-talk subagent proposals
+  visual_required_notes.md        — transcript-grep evidence + reasoning
+  - landed alongside Codex's original-pass artifacts (agent_a/b/c_notes.md,
+    agent_a/b/c_proposed_visual_gold.jsonl, frame .jpg evidence) per-talk.
+    Promoted rows were copied verbatim into visual_gold.jsonl.
 
 eval/reports/2026-05-27_visual_eval/
   methodology.mdx — this file (supersedes the n=8 version)
