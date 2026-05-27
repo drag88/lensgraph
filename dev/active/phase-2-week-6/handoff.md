@@ -27,13 +27,16 @@ The single `rrf_4ch` failure is `sally-staying-on-task-attention` — dense and 
 ## Where we are at HEAD
 
 ```
-<NEW HEAD> eval(bakeoff): bakeoff #1 review fixes — eval_results writes + handoff closeout
-1ec8bf1    eval(bakeoff): bakeoff #1 — text embeddings (winner: bge-m3-all-channels, TR@5 best-of-channel 1.00)
-03365fd    docs(handoff): open phase 2 week 6 — bakeoff #1 (text embeddings)
-8d6694a    docs(handoff): drop stale "code_path filter deferred" claim + correct text_embeddings read shape
-a1fa1dd    fix(generate,db): cite bounds-check answer_claim_index + load_bakeoff_winner code_path filter
-a37f9b6    docs(handoff): close phase-1 week-5 — slice 3 shipped, EXIT GATE passed, step 35 unlocks phase 2
+21d2b93 eval(bakeoff): bakeoff #1 review fixes — eval_results writes + handoff closeout
+1ec8bf1 eval(bakeoff): bakeoff #1 — text embeddings (winner: bge-m3-all-channels, TR@5 best-of-channel 1.00)
+03365fd docs(handoff): open phase 2 week 6 — bakeoff #1 (text embeddings)
+8d6694a docs(handoff): drop stale "code_path filter deferred" claim + correct text_embeddings read shape
+a1fa1dd fix(generate,db): cite bounds-check answer_claim_index + load_bakeoff_winner code_path filter
+a37f9b6 docs(handoff): close phase-1 week-5 — slice 3 shipped, EXIT GATE passed, step 35 unlocks phase 2
 ```
+
+Further review-fix commits may sit on top of `21d2b93` (e.g. atomicity hardening,
+loophole closures) — check `git log --oneline` if the handoff seems out of date.
 
 ### Gates green at close
 

@@ -15,9 +15,26 @@ Two measurement modes:
   pass@5 + the top-k chunks the channels actually returned. Locks the
   winner iff the best vector-channel score clears the minimum.
 
-* **From-file** — ``--measurements-json PATH`` reads measurements from a
-  JSON file. Used by the step-35a RED test to exercise the selection
-  rule deterministically without a populated DB.
+* **From-file** — ``--measurements-json PATH`` reads measurements
+  *and* per-example detail from a JSON file. Used by the step-35a RED
+  test to exercise the selection rule deterministically without a
+  populated DB. The file shape is required to be::
+
+      {
+        "measurements": [{candidate_id, score, price_per_mtok_usd,
+                          meets_minimums}, ...],
+        "per_example": {
+          example_id: {
+            "gold_span": {video_id, start_sec, end_sec},
+            "pass_at_5": {channel: bool, ...},
+            "top_k_per_channel": {channel: [{chunk_id, ...}, ...], ...}
+          }, ...
+        }
+      }
+
+  A bare list (the pre-fix shape) is rejected with exit code 2 so the
+  phase-2 hard rule "measurements land in eval_runs + eval_results" can
+  never be silently bypassed via this flag.
 
 Failing-minimum behaviour: the row is still written (honest recording of
 the failing measurement so the methodology writeup can quote it), but
@@ -167,15 +184,36 @@ def main(argv: list[str] | None = None) -> int:
     tie_break_pp = float(cfg["selection_rule"]["tie_break_pp"])
     cfg_sha = _yaml_sha256(_CONFIG_PATH)
 
-    per_example_detail: dict[str, dict] | None
+    per_example_detail: dict[str, dict]
     if args.measurements_json is None:
         measurements, extra_summary, per_example_detail = _run_real_measurement(cfg)
     else:
-        measurements = json.loads(args.measurements_json.read_text(encoding="utf-8"))
+        payload = json.loads(args.measurements_json.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            sys.stderr.write(
+                "ERROR: --measurements-json must be the object shape "
+                "{'measurements': [...], 'per_example': {...}}. The bare-list "
+                "shape was deprecated to enforce the phase-2 hard rule "
+                "(per-example measurements must land in eval_results).\n"
+            )
+            return 2
+        if not isinstance(payload, dict) or "measurements" not in payload \
+                or "per_example" not in payload:
+            sys.stderr.write(
+                "ERROR: --measurements-json must contain both 'measurements' "
+                f"and 'per_example' keys; got keys: "
+                f"{sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}\n"
+            )
+            return 2
+        measurements = payload["measurements"]
+        per_example_detail = payload["per_example"]
+        if not per_example_detail:
+            sys.stderr.write(
+                "ERROR: --measurements-json 'per_example' must contain at "
+                "least one example so eval_results rows are written.\n"
+            )
+            return 2
         extra_summary = {"measurement_mode": "from_file"}
-        # From-file mode carries no per-example data — skip eval_results
-        # writes; this mode exists only for the step-35a RED test.
-        per_example_detail = None
 
     extra_summary.update(
         {
@@ -214,7 +252,11 @@ def main(argv: list[str] | None = None) -> int:
                 + "\n"
             )
             return 1
-        with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
+        # Single transaction: insert_run + eval_results inserts commit
+        # together (no lock here — we never lock a failing measurement).
+        # Connection context manager commits on success, rolls back on
+        # exception, so a mid-loop failure leaves zero partial state.
+        with psycopg.connect(resolve_dsn()) as conn:
             eval_runs.insert_run(
                 conn,
                 run_id=run_id,
@@ -225,10 +267,9 @@ def main(argv: list[str] | None = None) -> int:
                 candidate_set_yaml=cfg,
                 summary=extra_summary,
             )
-            if per_example_detail is not None:
-                _write_per_example_results(
-                    conn, run_id=run_id, per_example_detail=per_example_detail
-                )
+            _write_per_example_results(
+                conn, run_id=run_id, per_example_detail=per_example_detail
+            )
         threshold = extra_summary.get("embeddings_min_threshold", 0.75)
         sys.stdout.write(
             f"FAILED: no candidate met embeddings minimum "
@@ -260,7 +301,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
+    # Single transaction: insert_run + per-example eval_results + lock
+    # commit together. Lock is written LAST so a mid-run failure (e.g.
+    # an eval_results insert) leaves zero partial state — no run row,
+    # no results, no winner-locked summary. Connection context manager
+    # commits on success and rolls back on exception.
+    with psycopg.connect(resolve_dsn()) as conn:
         eval_runs.insert_run(
             conn,
             run_id=run_id,
@@ -271,6 +317,9 @@ def main(argv: list[str] | None = None) -> int:
             candidate_set_yaml=cfg,
             summary={"component": "text_embeddings"},
         )
+        _write_per_example_results(
+            conn, run_id=run_id, per_example_detail=per_example_detail
+        )
         eval_runs.lock_bakeoff_winner(
             conn,
             component="text_embeddings",
@@ -278,10 +327,6 @@ def main(argv: list[str] | None = None) -> int:
             run_id=run_id,
             extra_summary=extra_summary,
         )
-        if per_example_detail is not None:
-            _write_per_example_results(
-                conn, run_id=run_id, per_example_detail=per_example_detail
-            )
     sys.stdout.write(
         f"locked text_embeddings winner: {winner['candidate_id']} ({run_id})\n"
     )
