@@ -98,23 +98,42 @@ ChannelFn = Callable[
 ]
 
 
+def _result_to_dict(r: ChannelResult | FusedResult) -> dict:
+    return {
+        "chunk_id": r.chunk_id,
+        "video_id": r.video_id,
+        "start_sec": r.start_sec,
+        "end_sec": r.end_sec,
+        "rank": r.rank,
+        "score": float(r.score),
+    }
+
+
 def tr_at_k(
     conn: psycopg.Connection,
     examples: Sequence[GoldQuery],
     channel_fn: ChannelFn,
     *,
     k: int = 5,
-) -> tuple[float, list[bool]]:
+) -> tuple[float, list[bool], list[list[dict]]]:
     """Aggregate TR@k for ``examples`` against ``channel_fn``.
 
-    Returns ``(score, per_example_passes)`` where ``score = passes / total``.
-    The channel function is responsible for returning at least ``k`` ranked
-    results (caller controls top_k on the underlying retrieve module).
+    Returns ``(score, per_example_passes, per_example_top_k)`` where
+    ``score = passes / total`` and ``per_example_top_k`` is the list of
+    top-k retrieved chunks (as JSON-serialisable dicts) for each input,
+    aligned by index. The channel function is responsible for returning
+    at least ``k`` ranked results (caller controls top_k on the
+    underlying retrieve module).
     """
     if not examples:
-        return 0.0, []
-    passes = [_passes_at_k(channel_fn(conn, ex.question), ex, k=k) for ex in examples]
-    return sum(passes) / len(examples), passes
+        return 0.0, [], []
+    passes: list[bool] = []
+    top_ks: list[list[dict]] = []
+    for ex in examples:
+        results = channel_fn(conn, ex.question)
+        top_ks.append([_result_to_dict(r) for r in results[:k]])
+        passes.append(_passes_at_k(results, ex, k=k))
+    return sum(passes) / len(examples), passes, top_ks
 
 
 def _dense_fn(conn: psycopg.Connection, q: str) -> list[ChannelResult]:
@@ -157,27 +176,56 @@ def measure_all_channels(
     examples: Sequence[GoldQuery],
     *,
     k: int = 5,
-) -> dict:
+) -> tuple[dict, dict[str, dict]]:
     """Run TR@k across every channel in ``CHANNEL_FNS``.
 
-    Returns a dict suitable for embedding in ``eval_runs.summary``:
+    Returns ``(summary, per_example_detail)``:
 
-      * ``per_channel_tr_at_5`` — ``{channel: float}``
-      * ``per_example`` — ``{example_id: {channel: bool}}``
-      * ``n_examples`` — total scored
-      * ``vector_best_score`` — max over VECTOR_ONLY_CHANNELS (drives
-        the selection-rule minimum check)
+      * ``summary`` is the lightweight aggregate destined for
+        ``eval_runs.summary``:
+
+          - ``per_channel_tr_at_5`` — ``{channel: float}``
+          - ``per_example`` — ``{example_id: {channel: bool}}``
+          - ``n_examples`` — total scored
+          - ``vector_best_score`` — max over VECTOR_ONLY_CHANNELS
+            (drives the selection-rule minimum check)
+
+      * ``per_example_detail`` carries the heavier per-example data the
+        script unpacks into one ``eval_results`` row per example:
+
+          - ``gold_span`` — the example's video_id + start/end seconds
+          - ``pass_at_5`` — per-channel boolean (same as in summary)
+          - ``top_k_per_channel`` — per-channel list of the top-k chunks
+            actually returned (chunk_id, video_id, span, rank, score)
     """
     per_channel: dict[str, float] = {}
-    per_example: dict[str, dict[str, bool]] = {ex.example_id: {} for ex in examples}
+    per_example_pass: dict[str, dict[str, bool]] = {ex.example_id: {} for ex in examples}
+    per_example_top_k: dict[str, dict[str, list[dict]]] = {
+        ex.example_id: {} for ex in examples
+    }
     for name, fn in CHANNEL_FNS.items():
-        score, passes = tr_at_k(conn, examples, fn, k=k)
+        score, passes, top_ks = tr_at_k(conn, examples, fn, k=k)
         per_channel[name] = score
-        for ex, p in zip(examples, passes, strict=True):
-            per_example[ex.example_id][name] = bool(p)
-    return {
+        for ex, p, tk in zip(examples, passes, top_ks, strict=True):
+            per_example_pass[ex.example_id][name] = bool(p)
+            per_example_top_k[ex.example_id][name] = tk
+
+    summary = {
         "per_channel_tr_at_5": per_channel,
-        "per_example": per_example,
+        "per_example": per_example_pass,
         "n_examples": len(examples),
         "vector_best_score": max(per_channel[c] for c in VECTOR_ONLY_CHANNELS),
     }
+    per_example_detail = {
+        ex.example_id: {
+            "gold_span": {
+                "video_id": ex.video_id,
+                "start_sec": ex.start_sec,
+                "end_sec": ex.end_sec,
+            },
+            "pass_at_5": per_example_pass[ex.example_id],
+            "top_k_per_channel": per_example_top_k[ex.example_id],
+        }
+        for ex in examples
+    }
+    return summary, per_example_detail

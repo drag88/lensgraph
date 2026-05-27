@@ -191,7 +191,39 @@ def test_real_measurements_against_dev_gold():
             assert proc.returncode != 0, (
                 "min FAILED but exit was 0 — caller would think the lock succeeded"
             )
+
+        # Hard rule: per-channel measurements land in eval_runs.summary
+        # AND in eval_results. Assert one row per dev_gold example was
+        # written under this run_id, with per-channel pass@5 + the
+        # actual top-k chunks in system_output.
+        n_examples = int(summary["n_examples"])
+        with psycopg.connect(live_dsn, autocommit=True) as c:
+            rows = c.execute(
+                """
+                SELECT example_id, system_output, metrics
+                  FROM eval_results
+                 WHERE eval_run_id = %s
+                """,
+                (run_id,),
+            ).fetchall()
+        assert len(rows) == n_examples, (
+            f"expected {n_examples} eval_results rows under {run_id}, got {len(rows)}"
+        )
+        for example_id, system_output, metrics in rows:
+            assert "gold_span" in system_output, system_output
+            assert "top_k_per_channel" in system_output
+            for channel in ("dense", "sparse", "multivec", "rrf_4ch"):
+                assert channel in system_output["top_k_per_channel"], (
+                    f"{example_id} missing top-k for channel {channel}"
+                )
+                assert isinstance(system_output["top_k_per_channel"][channel], list)
+            pass_map = metrics["pass_at_5_per_channel"]
+            for channel in ("dense", "sparse", "multivec", "rrf_4ch"):
+                assert channel in pass_map, f"{example_id} metrics missing {channel}"
+                assert isinstance(pass_map[channel], bool)
+            assert metrics["tr_at_5_best_vector"] in (0.0, 1.0)
     finally:
+        # CASCADE on eval_runs.run_id reaps the matching eval_results rows.
         if new_ids:
             with psycopg.connect(live_dsn, autocommit=True) as c:
                 c.execute(

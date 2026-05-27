@@ -9,9 +9,11 @@ Two measurement modes:
 
 * **Real (default)** — runs a per-channel ``TimestampRecall@5`` sweep over
   ``dev_gold.jsonl`` via ``eval/runners/measure_embeddings.py``, applies
-  the selection rule against the embeddings minimum, and writes one row
-  to ``eval_runs`` (``code_path='embeddings_bakeoff'``). Locks the winner
-  iff the best vector-channel score clears the minimum.
+  the selection rule against the embeddings minimum, writes one row to
+  ``eval_runs`` (``code_path='embeddings_bakeoff'``), and writes one
+  ``eval_results`` row per dev_gold example carrying the per-channel
+  pass@5 + the top-k chunks the channels actually returned. Locks the
+  winner iff the best vector-channel score clears the minimum.
 
 * **From-file** — ``--measurements-json PATH`` reads measurements from a
   JSON file. Used by the step-35a RED test to exercise the selection
@@ -78,13 +80,54 @@ def _embeddings_min_threshold(cfg: dict) -> float:
     )
 
 
-def _run_real_measurement(cfg: dict) -> tuple[list[dict], dict]:
+# Vector-only channels per ADR 004 v3.1; RRF blends BM25 so it does not
+# count toward the per-example best-vector summary metric.
+_VECTOR_ONLY_CHANNELS = ("dense", "sparse", "multivec")
+
+
+def _write_per_example_results(
+    conn: psycopg.Connection,
+    *,
+    run_id: str,
+    per_example_detail: dict[str, dict],
+) -> None:
+    """Emit one ``eval_results`` row per dev_gold example under ``run_id``.
+
+    ``system_output`` carries the gold span + per-channel top-k chunks
+    the script actually retrieved (for trace + future regression);
+    ``metrics`` carries per-channel pass@5 booleans + the best-vector
+    TR@5 numeric (0.0 or 1.0 at the example level) so SQL aggregations
+    can re-derive the run's score without re-parsing the channel breakdown.
+    """
+    for example_id, detail in per_example_detail.items():
+        eval_runs.insert_result(
+            conn,
+            run_id=run_id,
+            example_id=example_id,
+            system_output={
+                "gold_span": detail["gold_span"],
+                "top_k_per_channel": detail["top_k_per_channel"],
+            },
+            metrics={
+                "pass_at_5_per_channel": detail["pass_at_5"],
+                "tr_at_5_best_vector": float(
+                    max(detail["pass_at_5"][c] for c in _VECTOR_ONLY_CHANNELS)
+                ),
+            },
+        )
+
+
+def _run_real_measurement(
+    cfg: dict,
+) -> tuple[list[dict], dict, dict[str, dict]]:
     """Run a real per-channel TR@5 sweep against the live DB.
 
-    Returns ``(measurements_for_selection, extra_summary)`` where the
-    measurements list is shaped for ``_select_winner`` and the extra
-    summary holds the per-channel breakdown the methodology writeup
-    quotes.
+    Returns ``(measurements_for_selection, extra_summary,
+    per_example_detail)``. ``measurements`` is shaped for
+    ``_select_winner``; ``extra_summary`` is the lightweight aggregate
+    that lands in ``eval_runs.summary``; ``per_example_detail`` carries
+    the per-example top-k that lands in ``eval_results`` (one row per
+    dev_gold example).
     """
     from eval.runners.measure_embeddings import (
         load_dev_gold_single_clip,
@@ -93,7 +136,7 @@ def _run_real_measurement(cfg: dict) -> tuple[list[dict], dict]:
 
     examples = load_dev_gold_single_clip()
     with psycopg.connect(resolve_dsn(), autocommit=True) as conn:
-        sweep = measure_all_channels(conn, examples)
+        sweep, per_example_detail = measure_all_channels(conn, examples)
 
     min_threshold = _embeddings_min_threshold(cfg)
     vector_best = sweep["vector_best_score"]
@@ -111,7 +154,7 @@ def _run_real_measurement(cfg: dict) -> tuple[list[dict], dict]:
         "meets_minimums": meets,
         "measurement_mode": "real_dev_gold_sweep",
     }
-    return [measurement], extra
+    return [measurement], extra, per_example_detail
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,11 +167,15 @@ def main(argv: list[str] | None = None) -> int:
     tie_break_pp = float(cfg["selection_rule"]["tie_break_pp"])
     cfg_sha = _yaml_sha256(_CONFIG_PATH)
 
+    per_example_detail: dict[str, dict] | None
     if args.measurements_json is None:
-        measurements, extra_summary = _run_real_measurement(cfg)
+        measurements, extra_summary, per_example_detail = _run_real_measurement(cfg)
     else:
         measurements = json.loads(args.measurements_json.read_text(encoding="utf-8"))
         extra_summary = {"measurement_mode": "from_file"}
+        # From-file mode carries no per-example data — skip eval_results
+        # writes; this mode exists only for the step-35a RED test.
+        per_example_detail = None
 
     extra_summary.update(
         {
@@ -178,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
                 candidate_set_yaml=cfg,
                 summary=extra_summary,
             )
+            if per_example_detail is not None:
+                _write_per_example_results(
+                    conn, run_id=run_id, per_example_detail=per_example_detail
+                )
         threshold = extra_summary.get("embeddings_min_threshold", 0.75)
         sys.stdout.write(
             f"FAILED: no candidate met embeddings minimum "
@@ -227,6 +278,10 @@ def main(argv: list[str] | None = None) -> int:
             run_id=run_id,
             extra_summary=extra_summary,
         )
+        if per_example_detail is not None:
+            _write_per_example_results(
+                conn, run_id=run_id, per_example_detail=per_example_detail
+            )
     sys.stdout.write(
         f"locked text_embeddings winner: {winner['candidate_id']} ({run_id})\n"
     )

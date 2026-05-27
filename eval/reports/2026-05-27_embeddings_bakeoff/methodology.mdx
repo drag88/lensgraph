@@ -1,7 +1,7 @@
 # Bakeoff #1 — Text Embeddings
 
 **Run date:** 2026-05-27
-**Run ID:** `embeddings-bakeoff-81850d46865a`
+**Run ID:** `embeddings-bakeoff-7b422944f8e0`
 **Code path:** `embeddings_bakeoff`
 **Component:** `text_embeddings`
 **Outcome:** ✅ `bge-m3-all-channels` **locked**. Vector-best TR@5 = 1.00 ≥ 0.75 minimum.
@@ -26,7 +26,7 @@ For component = text_embeddings:
   chosen     = cheapest in qualifying = bge-m3-all-channels  ($0/Mtok, local)
 ```
 
-`test_gold.jsonl` was not consulted (per ADR 004 v3.1 and `docs/eval-methodology.md`: the test set is reserved for the final phase-4 writeup). `synthesis.jsonl` was loaded for completeness but not blended into the TR@5 average — the methodology rule reports synthesis separately.
+`test_gold.jsonl` was not consulted (per ADR 004 v3.1 and `docs/eval-methodology.md`: the test set is reserved for the final phase-4 writeup). `synthesis.jsonl` was not loaded either — the methodology rule excludes synthesis examples from the TR@5 average and reports them separately; the runner intentionally opens only `dev_gold.jsonl` and filters to `question_type == "single_clip"`.
 
 ## Per-channel TR@5 (n = 10 single_clip dev_gold examples)
 
@@ -79,7 +79,7 @@ make db-up
 uv run python -m scripts.run_embeddings_bakeoff
 # → locked text_embeddings winner: bge-m3-all-channels (embeddings-bakeoff-<id>)
 
-# Inspect the locked row
+# Inspect the locked row (aggregate)
 psql lensgraph -c "
   SELECT summary->>'winner_candidate_id',
          summary->'per_channel_tr_at_5',
@@ -90,6 +90,16 @@ psql lensgraph -c "
      AND summary->>'component' = 'text_embeddings'
    ORDER BY created_at DESC LIMIT 1;
 "
+
+# Inspect per-example rows (one per dev_gold example)
+psql lensgraph -c "
+  SELECT example_id,
+         metrics->'pass_at_5_per_channel' AS pass_at_5,
+         metrics->>'tr_at_5_best_vector'  AS best_vector
+    FROM eval_results
+   WHERE eval_run_id = '<run_id from above>'
+   ORDER BY example_id;
+"
 ```
 
 ## Inputs
@@ -97,7 +107,7 @@ psql lensgraph -c "
 - **Candidate yaml SHA256:** `f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1`
   (file: `eval/config/model_candidates.yaml`, `last_updated: 2026-05-27`)
 - **dev_gold:** `eval/corpora/ai_engineering_v0/dev_gold.jsonl` (10 verified single_clip examples)
-- **Synthesis (reported separately, not blended):** `eval/corpora/ai_engineering_v0/synthesis.jsonl` (1 example)
+- **Synthesis:** *not loaded.* The methodology rule reports synthesis separately; the runner filters to `question_type == "single_clip"` and does not open `synthesis.jsonl`.
 - **`test_gold`:** *not consulted.* Reserved for phase-4 writeup per ADR 004 v3.1.
 - **Code paths:** `scripts/run_embeddings_bakeoff.py` → `eval/runners/measure_embeddings.py` → `retrieve/{dense,sparse,multivec,bm25,rrf}.py`
 
