@@ -59,6 +59,10 @@ ColQwen2.5 is the 5th retrieval channel in production but was **not** measured b
 ## Where we are at HEAD
 
 ```
+7c84cff chore(curation): merge 2026-05-27_required/ into 2026-05-27/ per-talk subdirs
+5c44735 eval(visual): visual-required curation slice (n=10) — lift remains NON-ACTIONABLE
+f15b847 feat(scripts)+docs(adr-005): implement fetch_video.py + Makefile targets; flip ADR 005 to Accepted
+fc56b39 docs(handoff): refresh phase-2 week-6 handoff to current HEAD ec7b5b7
 ec7b5b7 eval(visual): first real visual_eval run — frame_recall@5=0.125, chunk_tr@5=0.125, lift=0pp (text-saturated)
 d5b4bb6 docs(adr-005)+scripts: chapter-slice video capture pattern + ingest queue drain
 0d646da eval(visual): curate 8 verified visual_gold rows + frame evidence (review-approved)
@@ -73,9 +77,12 @@ a1fa1dd fix(generate,db): cite bounds-check answer_claim_index + load_bakeoff_wi
 a37f9b6 docs(handoff): close phase-1 week-5 — slice 3 shipped, EXIT GATE passed, step 35 unlocks phase 2
 ```
 
-Further review-fix commits may sit on top of `ec7b5b7` (handoff refresh,
-ADR 005 consistency fixes, visual-required curation pass). Check
-`git log --oneline` if the handoff seems out of date.
+Handoff closed at `7c84cff`. The four post-`ec7b5b7` commits cover: handoff
+refresh (`fc56b39`), ADR 005 → Accepted + `scripts/fetch_video.py` +
+`make fetch-video[s]` (`f15b847`), visual-required curation slice + second
+real visual_eval run (`5c44735`), and the curation-folder merge (`7c84cff`).
+Next session is a parallel slice on visual retrieval diagnostics + an
+answer-grounded metric — see `prompts/prompt47.md`.
 
 ### Gates green after the first real visual_eval run
 
@@ -209,18 +216,15 @@ DB state at close: `eval_runs` has 1 row with `code_path='embeddings_bakeoff'` (
 
 ---
 
-## Next session (week 7)
+## Next session (parallel agent-team slice — `prompts/prompt47.md`)
 
-**Bakeoff #2: generator + judge.**
+**Mission:** make visual retrieval **answer-grounded**, so visual lift can become actionable. Current span-TR@5 saturates under text retrieval and pins lift at 0–5pp on this corpus regardless of ColQwen quality. Four parallel agent owners:
 
-Per ADR 004 v3.1: pick judge first (cheapest hitting Cohen's kappa ≥ 0.60 against the boundary audit), then pick generator with the locked judge using the selection rule (cheapest within 3pp of leader, meeting all generator minimums). Cross-family rule: judge family must differ from generator family. Requires the thin generation harness in `eval/runners/minimal_generation.py` (already shipped phase 1) — do NOT reach into the LangGraph loop.
+- **Agent A — Metric / data contract.** Answer-grounded visual metric design: did the retrieved frame/chunk actually contain the expected visual claim, not just overlap the gold timestamp? Decide schema extension vs new `visual_answer_gold` file. Preserve dev/test separation; do NOT touch `test_gold.jsonl`.
+- **Agent B — Retrieval diagnostics.** Per-example rank curves @5/@10/@20/@50 on the existing visual-required slice. Break failures down by pipeline stage (pooled prefilter / frame→chunk map / MaxSim refine / RRF fusion). Distinguish near-misses from total misses.
+- **Agent C — ColQwen / substrate quality.** Verify `ColQwen2_5_Processor.image_processor.{min_pixels, max_pixels}` against actual frame PNG dimensions (flagged in ADR 005). Ablate frame cadence, resolution, slide crop/letterbox, top-k pool. Diagnosis only — no model swap.
+- **Agent D — Visual-required gold quality.** Re-review the 10 visual-required rows. Add/revise only with frame evidence + transcript-grep proof. Save evidence in repo; raw MP4s stay gitignored.
 
-Expected outputs:
-- `eval/reports/<date>_generator_bakeoff/methodology.mdx`
-- One `eval_runs` row per (generator × judge) configuration with `code_path='minimal_generation'`
-- One `eval_results` row per dev_gold example per run, carrying answer + cited spans + judge verdict
-- Locked rows: one for `component='judge'`, one for `component='generator'`
+**Bakeoff #2 (generator + judge) does NOT block this slice and is NOT in scope for prompt47.** It is a separate future session. The negative/boundary-audit workstream similarly does not block — keep both running in parallel.
 
-Estimated cost: ~$2 (per ADR 004 v3.1 §"The bakeoffs").
-
-A separate kickoff prompt will be authored when the week-7 session starts. The stale `prompts/phase-2-week-6-kickoff.md` was deleted this session.
+The previously-stale `prompts/phase-2-week-6-kickoff.md` is deleted; `prompts/prompt47.md` is the new entry point.
