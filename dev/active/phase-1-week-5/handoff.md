@@ -140,7 +140,7 @@ Total live-DeepInfra spend this session: ~$0.015 (3 EXIT GATE attempts at ~$0.00
 | `eval/runners/providers.py` | DeepInfra HTTP client; env-only auth; httpx.MockTransport-tested; exp backoff retry on 429/5xx; ProviderError on 4xx (non-429) and malformed-200 |
 | `eval/runners/minimal_generation.py` | Bakeoff harness; one provider call → one eval_runs row + one eval_results row; shared parser; 90s timeout |
 | `generate/parser.py` | Pydantic models + parse_generation_output; code-fence salvage; parse_ok=False on any failure (raw_response always populated) |
-| `db/repos/eval_runs.py` | insert_run, insert_result, lock_bakeoff_winner (idempotent), load_bakeoff_winner (MRU) |
+| `db/repos/eval_runs.py` | insert_run, insert_result, lock_bakeoff_winner (idempotent), load_bakeoff_winner (MRU + optional `code_path` filter — production callers MUST pass the canonical code_path per component per design §5) |
 | `db/repos/traces.py` | start_trace, end_trace, flush_spans (batched ::jsonb[] cast idiom from queues/pgmq_client.py) |
 | `generate/state.py` | AgentState TypedDict + all Pydantic models (RetrievedChunk, GeneratorCandidate, JudgeCandidate, AnswerResult, ValidatedCitation, InvalidCitation, ...) |
 | `generate/trace.py` | new_uuid7 (RFC 9562 inline), serialize_state_snapshot, span context manager |
@@ -157,7 +157,13 @@ Total live-DeepInfra spend this session: ~$0.015 (3 EXIT GATE attempts at ~$0.00
 - Async LangGraph (`ainvoke`) — slice 3 uses `.invoke` per Makefile-target simplicity. Phase-4 streaming will revisit.
 - OpenRouter failover wiring (design §6 "engages only when `LENSGRAPH_PROVIDER_FAILOVER=1`" — not slice 3).
 - `retrieve/api.py` public surface — generate/nodes/retrieve.py calls channels + RRF directly; the dedicated module is phase-4 UI work.
-- Per-component code_path filter on `load_bakeoff_winner`: design §5 SQL filters `code_path='minimal_generation'` for generator/judge winners. Today's behaviour is component-keyed via `summary->>'component'` which is unique enough across the existing code_paths; phase-2 can add the code_path filter as a kwarg if a future code_path conflict surfaces. Not load-bearing today (no `winner_locked` rows exist yet).
+<!-- The per-component code_path filter on load_bakeoff_winner is no longer
+deferred — it landed in commit a1fa1dd (Codex review fix). Production
+callers pass code_path explicitly: generator/judge use 'minimal_generation'
+per design §5, embeddings will use 'embeddings_bakeoff', and a future
+chunking ablation will use 'chunking_ablation'. The slow test
+test_load_bakeoff_winner_ignores_non_minimal_generation_code_path proves
+a langgraph_loop lock cannot leak into canonical generator selection. -->
 
 ---
 
@@ -208,7 +214,7 @@ The week-6 deliverable is **Bakeoff #1: text embeddings** (ADR 004 v3.1 + design
 Substrate already in place:
 - `scripts/run_embeddings_bakeoff.py` scaffolds the runner (synthetic measurements today; phase 2 swaps for real TimestampRecall@5).
 - `eval_runs` + `eval_results` tables ready.
-- `db.repos.eval_runs.lock_bakeoff_winner('text_embeddings', 'bge-m3-all-channels', run_id=...)` is the lock contract; `load_bakeoff_winner(component='text_embeddings')` reads it.
+- `db.repos.eval_runs.lock_bakeoff_winner(component='text_embeddings', candidate_id='bge-m3-all-channels', run_id=...)` is the lock contract. The corresponding read is `load_bakeoff_winner(component='text_embeddings', code_path='embeddings_bakeoff')` — phase 2 must pass the canonical `code_path` for the component (matches the design §5 SQL discipline already enforced for generator/judge via `code_path='minimal_generation'`). Today no production read path exists for `text_embeddings`; the scaffold only writes. Phase-2 ingest tuning is where the read call gets added.
 - BGE-M3 is the only realistic v0 candidate today (Voyage / Gemini Embedding 2 are fallbacks gated on BGE-M3 failing the 0.75 TimestampRecall@5 minimum).
 
 Phase 2 week 6 tasks (in order):
