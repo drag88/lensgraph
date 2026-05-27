@@ -1,4 +1,4 @@
-.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean db-up db-down db-build db-verify-ext db-migrate db-reset logs ingest ingest-all bakeoff-prep
+.PHONY: help install validate-evals validate-evals-strict validate-self-test phase0-gate test fmt lint clean db-up db-down db-build db-verify-ext db-migrate db-reset logs ingest ingest-all bakeoff-prep answer
 
 CORPUS ?= ai_engineering_v0
 
@@ -87,3 +87,6 @@ ingest-all:
 
 bakeoff-prep:
 	uv run python -m scripts.bakeoff_prep --corpus $(CORPUS)
+
+answer:
+	uv run python -m generate.api
