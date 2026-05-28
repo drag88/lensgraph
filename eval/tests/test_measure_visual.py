@@ -14,11 +14,17 @@ import pytest
 
 from eval.runners.measure_visual import (
     FRAME_SAMPLE_EVERY_SEC,
+    VisualEvidenceItem,
     VisualGoldQuery,
+    answer_term_hit_at_k,
+    answer_term_matches_at_k,
     chunk_passes_at_k,
+    chunk_text_contains_evidence,
     frame_passes_at_k,
+    load_visual_evidence,
     load_visual_gold,
     measure_visual,
+    normalize_text,
     visual_chunk_tr_at_k,
     visual_frame_recall_at_k,
     visual_lift_at_k,
@@ -38,13 +44,15 @@ def _frame(*, frame_id=1, video_id="v1", frame_sec=170.0, rank=1) -> FrameResult
     )
 
 
-def _chunk(*, chunk_id=1, video_id="v1", start=160.0, end=180.0, rank=1) -> ChannelResult:
+def _chunk(
+    *, chunk_id=1, video_id="v1", start=160.0, end=180.0, rank=1, text="t"
+) -> ChannelResult:
     return ChannelResult(
         chunk_id=chunk_id,
         video_id=video_id,
         start_sec=start,
         end_sec=end,
-        text="t",
+        text=text,
         score=1.0 / rank,
         rank=rank,
     )
@@ -204,11 +212,16 @@ def test_measure_visual_shape_matches_runner_contract(monkeypatch):
     assert summary["n_examples"] == 1
     assert summary["visual_frame_recall_at_k"] == 1.0
     assert summary["visual_chunk_tr_at_k"] == 1.0
-    assert set(summary["per_example"]["a"]) == {"frame_pass", "chunk_pass"}
+    # `answer_term_hit` is None when evidence_by_example is not supplied — the
+    # row is not evaluable, not "failed". Tests for the populated case
+    # live further down (see test_answer_term_hit_at_k_*).
+    assert set(summary["per_example"]["a"]) == {"frame_pass", "chunk_pass", "answer_term_hit"}
+    assert summary["per_example"]["a"]["answer_term_hit"] is None
     assert set(detail["a"]) == {
         "gold_span",
         "frame_pass_at_k",
         "chunk_pass_at_k",
+        "answer_term_hit_at_k",
         "top_k_frames",
         "top_k_chunks",
     }
@@ -260,9 +273,25 @@ def test_visual_lift_computes_per_example_and_aggregate(monkeypatch):
     out = visual_lift_at_k(conn=None, examples=examples, k=5)
     assert out["with_visual_pass_rate"] == pytest.approx(2 / 3)
     assert out["without_visual_pass_rate"] == pytest.approx(1 / 3)
+    # `lift_pp` is the back-compat alias for `lift_chunk_tr_pp`; both
+    # should agree byte-for-byte for the bakeoff-#1 atomicity contract.
     assert out["lift_pp"] == pytest.approx(33.33, abs=0.01)
-    assert out["per_example"]["a"] == {"with_visual": True, "without_visual": False}
-    assert out["per_example"]["b"] == {"with_visual": True, "without_visual": True}
+    assert out["lift_chunk_tr_pp"] == out["lift_pp"]
+    # With no evidence_by_example, the answer-hit tier is absent (None).
+    assert out["lift_answer_term_pp"] is None
+    assert out["answer_term_n_evaluable"] == 0
+    assert out["per_example"]["a"] == {
+        "with_visual": True,
+        "without_visual": False,
+        "answer_term_with_visual": None,
+        "answer_term_without_visual": None,
+    }
+    assert out["per_example"]["b"] == {
+        "with_visual": True,
+        "without_visual": True,
+        "answer_term_with_visual": None,
+        "answer_term_without_visual": None,
+    }
 
 
 # ---- load_visual_gold ----------------------------------------------------
@@ -494,3 +523,266 @@ def test_validator_rejects_visual_gold_without_visual_modality(tmp_path, monkeyp
     out = capsys.readouterr().out
     assert rc != 0, f"validator should fail; output was:\n{out}"
     assert "visual_gold entry" in out and "lacks any of" in out, out
+
+
+# ---- normalize_text ------------------------------------------------------
+
+
+def test_normalize_text_lowercase_collapse_ws():
+    assert (
+        normalize_text("  Retrieval  Quality  (NDCG@10)  ", "lowercase_collapse_ws")
+        == "retrieval quality (ndcg@10)"
+    )
+
+
+def test_normalize_text_exact_preserves_case_and_ws():
+    assert normalize_text("is_resumable=True", "exact") == "is_resumable=True"
+    # Whitespace inside is preserved too — `exact` is byte-for-byte.
+    assert normalize_text("  hello   World  ", "exact") == "  hello   World  "
+
+
+def test_normalize_text_unknown_mode_raises_valueerror():
+    with pytest.raises(ValueError, match="unknown normalize mode"):
+        normalize_text("anything", "title_case")
+
+
+# ---- chunk_text_contains_evidence ----------------------------------------
+
+
+def test_chunk_text_contains_evidence_single_item_disjunction():
+    """One item with multiple required_any — chunk passes if ANY term hits."""
+    item = VisualEvidenceItem(
+        visual_element="plot x-axis",
+        required_any=("price per million tokens", "tokens-per-second"),
+    )
+    # Only the first term appears → still passes (disjunction).
+    assert chunk_text_contains_evidence(
+        "the slide shows Price per Million Tokens on the x-axis", [item]
+    )
+    # Neither term appears → fails.
+    assert not chunk_text_contains_evidence(
+        "the speaker discusses retrieval at length", [item]
+    )
+
+
+def test_chunk_text_contains_evidence_multi_item_conjunction():
+    """Two items — chunk passes only if BOTH items have a term that hits.
+    (Across items is conjunction; within an item is disjunction.)"""
+    items = [
+        VisualEvidenceItem(visual_element="y-axis label", required_any=("NDCG@10",)),
+        VisualEvidenceItem(visual_element="x-axis label", required_any=("price per million tokens",)),
+    ]
+    # Both axis labels mentioned → passes.
+    assert chunk_text_contains_evidence(
+        "ndcg@10 on the y-axis and price per million tokens on the x-axis",
+        items,
+    )
+    # Only one axis mentioned → fails (conjunction).
+    assert not chunk_text_contains_evidence(
+        "ndcg@10 on the y-axis but no axis label given for x", items
+    )
+
+
+def test_chunk_text_contains_evidence_exact_normalize_case_sensitive():
+    """`exact` mode is byte-for-byte — case matters."""
+    item = VisualEvidenceItem(
+        visual_element="code identifier",
+        required_any=("is_resumable=True",),
+        normalize="exact",
+    )
+    assert chunk_text_contains_evidence("we set is_resumable=True in the config", [item])
+    # Different case → fails under `exact`.
+    assert not chunk_text_contains_evidence(
+        "we set IS_RESUMABLE=true in the config", [item]
+    )
+
+
+# ---- answer_term_matches_at_k -----------------------------------------------------
+
+
+def test_answer_term_matches_at_k_requires_span_overlap_AND_terms():  # noqa: N802 — AND signals logical conjunction
+    """The headline bug fix: a topically-similar chunk on the WRONG span
+    that happens to contain the term must NOT pass answer_term_matches_at_k, even
+    though it would pass the span-only chunk_passes_at_k.
+
+    Two competing chunks:
+      * On-span (overlaps gold) but no answer-bearing text.
+      * Off-span (no overlap) but contains the required term.
+    Neither should pass — the metric is an AND of the two gates."""
+    g = _gold(170, 180)
+    evidence = [VisualEvidenceItem(visual_element="y-axis", required_any=("NDCG@10",))]
+    on_span_no_terms = _chunk(start=175, end=178, text="discussion about retrieval", rank=1)
+    off_span_with_terms = _chunk(start=400, end=410, text="ndcg@10 is the metric", rank=2)
+    assert not answer_term_matches_at_k([on_span_no_terms, off_span_with_terms], g, evidence, k=5)
+
+
+def test_answer_term_matches_at_k_passes_when_both_gates_pass():
+    g = _gold(170, 180)
+    evidence = [VisualEvidenceItem(visual_element="y-axis", required_any=("NDCG@10",))]
+    chunk = _chunk(start=175, end=178, text="the y-axis shows ndcg@10 quality", rank=1)
+    assert answer_term_matches_at_k([chunk], g, evidence, k=5)
+
+
+def test_answer_term_matches_at_k_empty_evidence_returns_false():
+    """Undefined-by-design — callers must gate this at the aggregator
+    level. Returning False is the safe default so a stray empty-evidence
+    row never silently inflates the numerator."""
+    g = _gold(170, 180)
+    chunk = _chunk(start=175, end=178, text="anything", rank=1)
+    assert not answer_term_matches_at_k([chunk], g, [], k=5)
+
+
+def test_answer_term_matches_distinguishes_topical_chunk_from_answer_bearing_chunk():
+    """The headline regression test. Both chunks overlap [2010, 2030] on
+    the same video; one is topical only ("Shubam explains resume tracks
+    tools"), the other contains the curator-required answer-bearing
+    string ("resumability_config=ResumabilityConfig(is_resumable=True)").
+
+    * chunk_passes_at_k → both pass (they both overlap the gold span).
+    * answer_term_matches_at_k → only the answer-bearing chunk passes."""
+    g = _gold(2010, 2030, video="nXafozNIk3c", ex_id="resumability")
+    topical = _chunk(
+        video_id="nXafozNIk3c",
+        start=2010,
+        end=2020,
+        text="Shubam explains that resume tracks tools that already ran",
+        rank=1,
+    )
+    answer_bearing = _chunk(
+        chunk_id=2,
+        video_id="nXafozNIk3c",
+        start=2020,
+        end=2030,
+        text=(
+            "the code wires resumability_config=ResumabilityConfig(is_resumable=True)"
+        ),
+        rank=2,
+    )
+    # Sanity: both pass the span-only metric.
+    assert chunk_passes_at_k([topical], g, k=5)
+    assert chunk_passes_at_k([answer_bearing], g, k=5)
+    # The new metric distinguishes them.
+    evidence = [
+        VisualEvidenceItem(
+            visual_element="code identifier",
+            required_any=("is_resumable=True", "ResumabilityConfig"),
+        )
+    ]
+    assert not answer_term_matches_at_k([topical], g, evidence, k=5)
+    assert answer_term_matches_at_k([answer_bearing], g, evidence, k=5)
+
+
+# ---- answer_term_hit_at_k (aggregator) ---------------------------------
+
+
+def test_answer_term_hit_at_k_skips_rows_without_evidence_in_denominator():
+    """A row with no evidence contributes None to per_example_passes and
+    is not counted in the numerator OR the denominator. The aggregate
+    score therefore reflects ONLY rows with curator-supplied evidence."""
+    examples = [
+        _gold(170, 180, ex_id="a"),  # evidence present, will pass
+        _gold(300, 320, ex_id="b"),  # NO evidence — skipped
+        _gold(500, 520, ex_id="c"),  # evidence present, will fail
+    ]
+    evidence_by_example: dict[str, list[VisualEvidenceItem]] = {
+        "a": [VisualEvidenceItem(visual_element="x", required_any=("hit",))],
+        "c": [VisualEvidenceItem(visual_element="x", required_any=("missing-term",))],
+    }
+
+    def stub(_c, q):
+        ex = next(e for e in examples if e.question == q)
+        return [
+            _chunk(
+                start=ex.start_sec + 1,
+                end=ex.end_sec - 1,
+                text="this chunk contains the HIT term",
+            )
+        ]
+
+    score, passes, top_ks = answer_term_hit_at_k(
+        conn=None,
+        examples=examples,
+        evidence_by_example=evidence_by_example,
+        k=5,
+        chunk_fn=stub,
+    )
+    # Denominator = 2 (rows a and c). Numerator = 1 (only row a hit).
+    assert score == 0.5
+    assert passes == [True, None, False]
+    assert len(top_ks) == 3
+    # Even the skipped row gets its top-k captured for the methodology MDX.
+    assert len(top_ks[1]) == 1
+
+
+def test_answer_term_hit_at_k_all_rows_lack_evidence_returns_zero():
+    """When no rows are evaluable the headline score collapses to 0.0
+    but per-example slots are all None (so a caller can tell "no signal"
+    apart from "every row failed")."""
+    examples = [_gold(170, 180, ex_id="a"), _gold(300, 320, ex_id="b")]
+
+    def stub(_c, q):
+        return [_chunk(start=171, end=179, text="anything")]
+
+    score, passes, top_ks = answer_term_hit_at_k(
+        conn=None,
+        examples=examples,
+        evidence_by_example={},
+        k=5,
+        chunk_fn=stub,
+    )
+    assert score == 0.0
+    assert passes == [None, None]
+    assert len(top_ks) == 2
+
+
+# ---- load_visual_evidence ------------------------------------------------
+
+
+def test_load_visual_evidence_parses_committed_visual_gold():
+    """The committed visual_gold.jsonl carries `visual_evidence` on the
+    10 `visual-required-*` rows that drive the v2 metric. Curator-side
+    work lands the field; the loader must surface exactly those rows.
+
+    If the curator task has not finished yet, this test will fail with
+    a clear count mismatch (10 expected, fewer present) — that's the
+    intended tripwire, not a flake."""
+    from eval.runners.measure_visual import _VISUAL_GOLD_PATH
+
+    out = load_visual_evidence(_VISUAL_GOLD_PATH)
+    assert len(out) == 10, (
+        "expected 10 visual-required rows with visual_evidence; got "
+        f"{len(out)} ({sorted(out)})"
+    )
+    # Every loaded key should begin with the visual-required prefix per
+    # the curator playbook.
+    assert all(k.startswith("visual-required-") for k in out), sorted(out)
+
+
+def test_load_visual_evidence_empty_required_any_raises_valueerror(tmp_path):
+    """A typo that produces required_any=[] must fail loudly — the
+    metric would otherwise vacuously pass every chunk."""
+    import json as _json
+
+    p = tmp_path / "visual_gold.jsonl"
+    p.write_text(
+        _json.dumps(
+            {
+                "id": "vis-bad",
+                "question": "?" * 16,
+                "video_id": "v1",
+                "split": "dev",
+                "question_type": "single_clip",
+                "gold_spans": [{"start_sec": 100, "end_sec": 120}],
+                "modality": ["slide"],
+                "difficulty": "easy",
+                "curator": "tester",
+                "curated_at": "2026-05-27T00:00:00Z",
+                "verified": True,
+                "visual_evidence": [
+                    {"visual_element": "plot legend", "required_any": []}
+                ],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="empty required_any"):
+        load_visual_evidence(p)

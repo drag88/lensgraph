@@ -4,10 +4,10 @@ Bakeoff #1 (text embeddings) measured the four text channels (dense,
 sparse, multivec, rrf_4ch) and is locked. Visual retrieval — ColQwen
 patches via ``retrieve.visual`` — is a 5th channel that is NOT covered
 by the embeddings minimum in ADR 004 v3.1. This module provides the
-parallel eval gate for visual retrieval against a dedicated
+eval gate for visual retrieval against a dedicated
 ``visual_gold.jsonl`` corpus.
 
-Two primary metrics + one optional comparison:
+Three metrics + one comparison:
 
 * ``VisualFrameRecall@k`` — frame-level recall using
   ``retrieve.visual.retrieve_frames``. A frame passes if its
@@ -23,13 +23,25 @@ Two primary metrics + one optional comparison:
   ``video_id == gold.video_id AND chunk.start_sec < gold.end_sec AND
   chunk.end_sec > gold.start_sec``.
 
-* ``VisualLift@k`` (optional, computed when both run) — for each
-  visual_gold example, compare a 5-channel RRF (BM25 + dense + sparse
-  + multivec + visual) against the 4-channel RRF used in bakeoff #1
-  (BM25 + dense + sparse + multivec). Lift =
-  ``(with_visual_pass_count - without_visual_pass_count) / n``. The
-  framing is: does adding the visual channel actually help on examples
-  where visual signal is hypothesized to matter?
+* ``AnswerTermHit@k`` — TEXT-SIDE diagnostic. For rows whose curator
+  filled in ``visual_evidence`` (a list of answer-bearing strings
+  confirmed against the gold FRAME), the row passes iff some top-k chunk
+  both span-overlaps the gold AND its TRANSCRIPT TEXT contains the
+  curator-supplied terms. This is NOT a visual-modality answer-grounding
+  metric. ColQwen frames are not OCR'd or judged. The metric only checks
+  whether the SURFACED TRANSCRIPT CHUNK (regardless of which retriever
+  surfaced it) quotes what the curator saw on the slide. A real visual
+  answer-grounding metric would need OCR over retrieved frames or a
+  visual judge — both are out of scope for this module.
+
+* ``VisualLift@k`` — for each visual_gold example, compare a 5-channel
+  RRF (BM25 + dense + sparse + multivec + visual) against the 4-channel
+  RRF used in bakeoff #1 (BM25 + dense + sparse + multivec). Lift is
+  reported on both ``VisualChunkTR@k`` and ``AnswerTermHit@k`` so the
+  caller can see whether adding the visual channel surfaces more
+  span-overlapping chunks AND/OR more answer-term-bearing transcript
+  chunks. Lift on either tier does not imply the visual model is
+  validating against the slide.
 
 Methodology guardrails (from CLAUDE.md hard rules + experiment-tracking):
 
@@ -48,6 +60,7 @@ Methodology guardrails (from CLAUDE.md hard rules + experiment-tracking):
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +98,28 @@ class VisualGoldQuery:
     video_id: str
     start_sec: float
     end_sec: float
+
+
+@dataclass(frozen=True)
+class VisualEvidenceItem:
+    """One curator-supplied required-term entry from a visual_gold row.
+
+    Provenance: the terms come from the gold FRAME (e.g. axis labels,
+    code identifiers visible on a slide). The metric that consumes them
+    (``AnswerTermHit@k``) checks them against the TRANSCRIPT TEXT of
+    retrieved chunks — it does NOT validate them against any visual
+    model output, OCR, or human-confirmed frame ID. The field name
+    ``visual_evidence`` describes where the curator looked; the check
+    runs on text.
+
+    The entry passes against a chunk if at least one of ``required_any``
+    appears as a substring (after normalization) in the chunk's text.
+    Multiple items on the same row are conjoined: every item must pass.
+    """
+
+    visual_element: str
+    required_any: tuple[str, ...]
+    normalize: str = "lowercase_collapse_ws"
 
 
 def load_visual_gold(path: Path = _VISUAL_GOLD_PATH) -> list[VisualGoldQuery]:
@@ -137,7 +172,115 @@ def load_visual_gold(path: Path = _VISUAL_GOLD_PATH) -> list[VisualGoldQuery]:
     return queries
 
 
+def load_visual_evidence(
+    path: Path = _VISUAL_GOLD_PATH,
+) -> dict[str, list[VisualEvidenceItem]]:
+    """Load curator-supplied ``visual_evidence`` entries keyed by example_id.
+
+    Rows without a ``visual_evidence`` field are skipped (the new metric
+    treats them as not-evaluable — they do not contribute to the
+    numerator or denominator of AnswerTermHit@k). Rows with malformed
+    entries raise ValueError so a typo never silently makes a row pass.
+    """
+    if not path.exists():
+        return {}
+    out: dict[str, list[VisualEvidenceItem]] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        ex = json.loads(line)
+        items_raw = ex.get("visual_evidence")
+        if not items_raw:
+            continue
+        items: list[VisualEvidenceItem] = []
+        for entry in items_raw:
+            required_any = tuple(entry["required_any"])
+            if not required_any:
+                raise ValueError(
+                    f"{path}: id={ex.get('id', '?')} has empty required_any "
+                    "in a visual_evidence entry"
+                )
+            items.append(
+                VisualEvidenceItem(
+                    visual_element=str(entry["visual_element"]),
+                    required_any=required_any,
+                    normalize=str(entry.get("normalize", "lowercase_collapse_ws")),
+                )
+            )
+        out[ex["id"]] = items
+    return out
+
+
 # --- Metric primitives (pure; no DB calls) ---------------------------------
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_text(text: str, mode: str) -> str:
+    """Normalize ``text`` according to ``mode``.
+
+    ``lowercase_collapse_ws`` lowercases and collapses runs of whitespace
+    to a single space, then strips. ``exact`` returns as-is. Unknown
+    modes raise ValueError so a typo in a fixture or curator file fails
+    loudly rather than silently bypassing the metric.
+    """
+    if mode == "exact":
+        return text
+    if mode == "lowercase_collapse_ws":
+        return _WS_RE.sub(" ", text.lower()).strip()
+    raise ValueError(f"unknown normalize mode: {mode!r}")
+
+
+def chunk_text_contains_evidence(
+    chunk_text: str,
+    evidence: Sequence[VisualEvidenceItem],
+) -> bool:
+    """True iff EVERY ``VisualEvidenceItem`` in ``evidence`` has at least
+    one term in ``required_any`` (normalized per the item's mode) as a
+    substring of the chunk text (normalized the same way).
+
+    Empty ``evidence`` returns True (vacuous). Callers gate the
+    "no evidence on this row" case at the aggregator level — see
+    ``answer_term_hit_at_k``.
+    """
+    for item in evidence:
+        normalized_chunk = normalize_text(chunk_text, item.normalize)
+        normalized_terms = [normalize_text(t, item.normalize) for t in item.required_any]
+        if not any(t in normalized_chunk for t in normalized_terms if t):
+            return False
+    return True
+
+
+def answer_term_matches_at_k(
+    results: Sequence[ChannelResult | FusedResult],
+    gold: VisualGoldQuery,
+    evidence: Sequence[VisualEvidenceItem],
+    *,
+    k: int,
+) -> bool:
+    """True iff some top-k chunk both overlaps the gold span on the right
+    video AND its TRANSCRIPT TEXT satisfies ``chunk_text_contains_evidence``.
+
+    The check runs on chunk transcript text, not on any frame, OCR
+    output, or visual judge. The metric distinguishes topically-similar
+    chunks from chunks whose text actually quotes the curator's
+    answer-bearing strings. Empty ``evidence`` returns False — the
+    metric is undefined for rows without curator-supplied terms, so
+    callers must skip them.
+    """
+    if not evidence:
+        return False
+    for r in results[:k]:
+        if (
+            r.video_id == gold.video_id
+            and r.end_sec > gold.start_sec
+            and r.start_sec < gold.end_sec
+            and chunk_text_contains_evidence(r.text, evidence)
+        ):
+            return True
+    return False
 
 
 def frame_passes_at_k(
@@ -194,11 +337,16 @@ def _frame_to_dict(f: FrameResult) -> dict:
 
 
 def _chunk_to_dict(r: ChannelResult | FusedResult) -> dict:
+    # ``text`` is included because the answer-term metric and the
+    # methodology MDX both need to inspect the surfaced chunk text (the
+    # span-overlap test alone cannot distinguish a topical chunk from
+    # an answer-bearing one — see ``answer_term_matches_at_k``).
     return {
         "chunk_id": r.chunk_id,
         "video_id": r.video_id,
         "start_sec": r.start_sec,
         "end_sec": r.end_sec,
+        "text": r.text,
         "rank": r.rank,
         "score": float(r.score),
     }
@@ -253,6 +401,59 @@ def visual_chunk_tr_at_k(
     return sum(passes) / len(examples), passes, top_ks
 
 
+def answer_term_hit_at_k(
+    conn: psycopg.Connection,
+    examples: Sequence[VisualGoldQuery],
+    evidence_by_example: dict[str, Sequence[VisualEvidenceItem]],
+    *,
+    k: int = 5,
+    chunk_fn: ChunkFn | None = None,
+) -> tuple[float, list[bool | None], list[list[dict]]]:
+    """Aggregate AnswerTermHit@k over ``examples`` using the visual
+    channel's chunk-level entry point.
+
+    Text-side diagnostic: validates whether the SURFACED CHUNK'S
+    TRANSCRIPT TEXT contains the curator's answer terms. Does NOT
+    validate against any frame, OCR, or visual judge. See module
+    docstring for the scope of the metric.
+
+    For each example:
+
+    * If ``evidence_by_example`` has no (or empty) entry for the example,
+      that row is NOT evaluable — its slot in ``per_example_passes`` is
+      ``None``, and it contributes to neither the numerator nor the
+      denominator of the returned ``score``.
+    * Otherwise, the row passes iff some top-k chunk both span-overlaps
+      the gold AND its transcript text satisfies the curator-supplied
+      evidence conjunction (see ``answer_term_matches_at_k``).
+
+    Returns ``(score, per_example_passes, per_example_top_k_chunks)``.
+    ``score`` is the mean over evaluable rows only. If no rows are
+    evaluable, ``score`` is 0.0 — callers should also inspect the
+    per-example list and the lift summary's ``n_evaluable`` before
+    interpreting the headline number."""
+    fn = chunk_fn or (lambda c, q: visual.retrieve(c, q, top_k=k))
+    if not examples:
+        return 0.0, [], []
+    passes: list[bool | None] = []
+    top_ks: list[list[dict]] = []
+    n_evaluable = 0
+    n_pass = 0
+    for ex in examples:
+        results = list(fn(conn, ex.question))
+        top_ks.append([_chunk_to_dict(r) for r in results[:k]])
+        evidence = evidence_by_example.get(ex.example_id) or ()
+        if not evidence:
+            passes.append(None)
+            continue
+        hit = answer_term_matches_at_k(results, ex, evidence, k=k)
+        passes.append(hit)
+        n_evaluable += 1
+        n_pass += int(hit)
+    score = (n_pass / n_evaluable) if n_evaluable else 0.0
+    return score, passes, top_ks
+
+
 def _rrf_with_visual(conn: psycopg.Connection, q: str, *, k: int) -> list[FusedResult]:
     b = bm25.retrieve(conn, q, top_k=30)
     d = dense.retrieve(conn, q, top_k=30)
@@ -283,51 +484,94 @@ def visual_lift_at_k(
     examples: Sequence[VisualGoldQuery],
     *,
     k: int = 5,
+    evidence_by_example: dict[str, Sequence[VisualEvidenceItem]] | None = None,
 ) -> dict:
     """Compare 5-channel RRF (text + visual) against 4-channel RRF
-    (text only) on the same visual gold set.
+    (text only) on the same visual gold set, on TWO metric tiers:
 
-    Returns a dict with::
+    1. ``VisualChunkTR@k`` span-overlap — the original phase-1 metric.
+       Reported as ``lift_chunk_tr_pp`` (also aliased to ``lift_pp`` for
+       back-compat with the bakeoff-#1 ``summary["lift_pp"]`` contract).
 
-        {
-          "with_visual_pass_rate": float,
-          "without_visual_pass_rate": float,
-          "lift_pp": float,              # (with - without) * 100, percentage points
-          "per_example": {
-            example_id: {"with_visual": bool, "without_visual": bool}
-          }
-        }
+    2. ``AnswerTermHit@k`` — span overlap AND curator-supplied
+       answer-bearing terms must appear in the chunk TRANSCRIPT TEXT.
+       Reported as ``lift_answer_term_pp`` and only computed when
+       ``evidence_by_example`` provides at least one item; rows without
+       evidence are skipped from BOTH numerator and denominator of the
+       answer-term rates. The check runs on text, not on frames — see
+       module docstring.
 
-    Empty ``examples`` returns zeros with empty per_example. Interpretation
+    Per-example dict carries the four booleans (two metrics × two stacks):
+    ``with_visual`` / ``without_visual`` (span-overlap) plus
+    ``answer_term_with_visual`` / ``answer_term_without_visual``. The
+    answer-term booleans are ``None`` for rows without curator evidence.
+
+    Empty ``examples`` returns zeros and empty per_example. Interpretation
     is the runner's job — small dev sets make even +/-10pp swings noisy.
     """
     if not examples:
         return {
             "with_visual_pass_rate": 0.0,
             "without_visual_pass_rate": 0.0,
-            "lift_pp": 0.0,
+            "lift_chunk_tr_pp": 0.0,
+            "lift_pp": 0.0,  # back-compat alias for lift_chunk_tr_pp
+            "lift_answer_term_pp": None,
+            "answer_term_with_visual_rate": None,
+            "answer_term_without_visual_rate": None,
+            "answer_term_n_evaluable": 0,
             "per_example": {},
         }
-    per_example: dict[str, dict[str, bool]] = {}
+    evidence_by_example = evidence_by_example or {}
+    per_example: dict[str, dict] = {}
     with_pass = without_pass = 0
+    at_with_pass = at_without_pass = 0
+    n_evaluable = 0
     for ex in examples:
-        with_pass_ex = chunk_passes_at_k(_rrf_with_visual(conn, ex.question, k=k), ex, k=k)
-        without_pass_ex = chunk_passes_at_k(_rrf_text_only(conn, ex.question, k=k), ex, k=k)
-        per_example[ex.example_id] = {
+        with_results = _rrf_with_visual(conn, ex.question, k=k)
+        without_results = _rrf_text_only(conn, ex.question, k=k)
+        with_pass_ex = chunk_passes_at_k(with_results, ex, k=k)
+        without_pass_ex = chunk_passes_at_k(without_results, ex, k=k)
+        entry: dict = {
             "with_visual": bool(with_pass_ex),
             "without_visual": bool(without_pass_ex),
+            "answer_term_with_visual": None,
+            "answer_term_without_visual": None,
         }
+        evidence = evidence_by_example.get(ex.example_id) or ()
+        if evidence:
+            at_with_ex = answer_term_matches_at_k(with_results, ex, evidence, k=k)
+            at_without_ex = answer_term_matches_at_k(without_results, ex, evidence, k=k)
+            entry["answer_term_with_visual"] = bool(at_with_ex)
+            entry["answer_term_without_visual"] = bool(at_without_ex)
+            at_with_pass += int(at_with_ex)
+            at_without_pass += int(at_without_ex)
+            n_evaluable += 1
+        per_example[ex.example_id] = entry
         with_pass += int(with_pass_ex)
         without_pass += int(without_pass_ex)
     n = len(examples)
     with_rate = with_pass / n
     without_rate = without_pass / n
-    return {
+    lift_chunk_tr_pp = round((with_rate - without_rate) * 100, 2)
+    out: dict = {
         "with_visual_pass_rate": with_rate,
         "without_visual_pass_rate": without_rate,
-        "lift_pp": round((with_rate - without_rate) * 100, 2),
+        "lift_chunk_tr_pp": lift_chunk_tr_pp,
+        "lift_pp": lift_chunk_tr_pp,  # back-compat alias
         "per_example": per_example,
     }
+    if n_evaluable:
+        at_with_rate = at_with_pass / n_evaluable
+        at_without_rate = at_without_pass / n_evaluable
+        out["lift_answer_term_pp"] = round((at_with_rate - at_without_rate) * 100, 2)
+        out["answer_term_with_visual_rate"] = at_with_rate
+        out["answer_term_without_visual_rate"] = at_without_rate
+    else:
+        out["lift_answer_term_pp"] = None
+        out["answer_term_with_visual_rate"] = None
+        out["answer_term_without_visual_rate"] = None
+    out["answer_term_n_evaluable"] = n_evaluable
+    return out
 
 
 def measure_visual(
@@ -337,6 +581,7 @@ def measure_visual(
     k: int = 5,
     tolerance_sec: float = FRAME_SAMPLE_EVERY_SEC,
     include_lift: bool = True,
+    evidence_by_example: dict[str, Sequence[VisualEvidenceItem]] | None = None,
 ) -> tuple[dict, dict[str, dict]]:
     """Run all visual metrics and return ``(summary, per_example_detail)``
     in the same shape ``eval.runners.measure_embeddings.measure_all_channels``
@@ -347,13 +592,31 @@ def measure_visual(
     (5-channel vs 4-channel RRF). It is optional because lift requires
     BOTH the visual stack AND the text stack to be populated for the
     same examples — and on tiny dev sets the result is mostly anecdotal.
-    """
+
+    ``evidence_by_example`` enables the text-side answer-term metric
+    (``AnswerTermHit@k``). When provided, rows whose example_id maps
+    to at least one ``VisualEvidenceItem`` are scored against the
+    span-overlap-AND-required-terms-in-chunk-text gate; rows without
+    evidence are skipped from the headline answer-term rate (numerator
+    and denominator both unaffected). The lift block also gains an
+    answer-term tier when evidence is provided. None is the back-compat
+    default. The metric does NOT validate against frames, OCR, or a
+    visual judge — see module docstring."""
+    evidence_by_example = evidence_by_example or {}
     frame_score, frame_passes, frame_topks = visual_frame_recall_at_k(
         conn, examples, k=k, tolerance_sec=tolerance_sec
     )
     chunk_score, chunk_passes, chunk_topks = visual_chunk_tr_at_k(
         conn, examples, k=k
     )
+    answer_term_passes: list[bool | None] = [None] * len(examples)
+    answer_term_score = 0.0
+    n_evaluable = 0
+    if evidence_by_example:
+        answer_term_score, answer_term_passes, _at_topks = answer_term_hit_at_k(
+            conn, examples, evidence_by_example, k=k
+        )
+        n_evaluable = sum(1 for p in answer_term_passes if p is not None)
 
     summary: dict = {
         "visual_frame_recall_at_k": frame_score,
@@ -365,10 +628,18 @@ def measure_visual(
             ex.example_id: {
                 "frame_pass": bool(fp),
                 "chunk_pass": bool(cp),
+                "answer_term_hit": at,  # may be None (row not evaluable)
             }
-            for ex, fp, cp in zip(examples, frame_passes, chunk_passes, strict=True)
+            for ex, fp, cp, at in zip(
+                examples, frame_passes, chunk_passes, answer_term_passes, strict=True
+            )
         },
     }
+    if evidence_by_example:
+        summary["answer_term_hit_at_k"] = answer_term_score
+        summary["answer_term_hit_n_evaluable"] = n_evaluable
+        summary["answer_term_hit_n_skipped"] = len(examples) - n_evaluable
+
     per_example_detail: dict[str, dict] = {
         ex.example_id: {
             "gold_span": {
@@ -378,20 +649,34 @@ def measure_visual(
             },
             "frame_pass_at_k": bool(fp),
             "chunk_pass_at_k": bool(cp),
+            "answer_term_hit_at_k": at,
             "top_k_frames": ftk,
             "top_k_chunks": ctk,
         }
-        for ex, fp, cp, ftk, ctk in zip(
-            examples, frame_passes, chunk_passes, frame_topks, chunk_topks, strict=True
+        for ex, fp, cp, at, ftk, ctk in zip(
+            examples,
+            frame_passes,
+            chunk_passes,
+            answer_term_passes,
+            frame_topks,
+            chunk_topks,
+            strict=True,
         )
     }
 
     if include_lift and examples:
-        lift = visual_lift_at_k(conn, examples, k=k)
+        lift = visual_lift_at_k(
+            conn, examples, k=k, evidence_by_example=evidence_by_example
+        )
         summary["visual_lift"] = {
             "with_visual_pass_rate": lift["with_visual_pass_rate"],
             "without_visual_pass_rate": lift["without_visual_pass_rate"],
-            "lift_pp": lift["lift_pp"],
+            "lift_chunk_tr_pp": lift["lift_chunk_tr_pp"],
+            "lift_pp": lift["lift_pp"],  # back-compat alias
+            "lift_answer_term_pp": lift["lift_answer_term_pp"],
+            "answer_term_with_visual_rate": lift["answer_term_with_visual_rate"],
+            "answer_term_without_visual_rate": lift["answer_term_without_visual_rate"],
+            "answer_term_n_evaluable": lift["answer_term_n_evaluable"],
         }
         for ex_id, p in lift["per_example"].items():
             per_example_detail[ex_id]["lift"] = p

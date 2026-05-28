@@ -135,6 +135,7 @@ def _write_per_example_results(
         metrics = {
             "frame_pass_at_k": detail["frame_pass_at_k"],
             "chunk_pass_at_k": detail["chunk_pass_at_k"],
+            "answer_term_hit_at_k": detail.get("answer_term_hit_at_k"),
         }
         if "lift" in detail:
             metrics["lift"] = detail["lift"]
@@ -167,12 +168,14 @@ def main(argv: list[str] | None = None) -> int:
 
     from eval.runners.measure_visual import (
         _VISUAL_GOLD_PATH,
+        load_visual_evidence,
         load_visual_gold,
         measure_visual,
     )
 
     gold_path = args.visual_gold if args.visual_gold is not None else _VISUAL_GOLD_PATH
     examples = load_visual_gold(gold_path)
+    evidence_by_example = load_visual_evidence(gold_path)
     if not examples:
         sys.stdout.write(
             "SKIPPED: visual_gold.jsonl has 0 single_clip examples. "
@@ -216,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
             examples,
             k=args.k,
             include_lift=not args.no_lift,
+            evidence_by_example=evidence_by_example,
         )
 
     summary.update(
