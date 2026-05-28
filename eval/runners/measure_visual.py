@@ -7,7 +7,7 @@ by the embeddings minimum in ADR 004 v3.1. This module provides the
 eval gate for visual retrieval against a dedicated
 ``visual_gold.jsonl`` corpus.
 
-Three metrics + one comparison:
+Four metrics + one comparison:
 
 * ``VisualFrameRecall@k`` — frame-level recall using
   ``retrieve.visual.retrieve_frames``. A frame passes if its
@@ -30,9 +30,30 @@ Three metrics + one comparison:
   curator-supplied terms. This is NOT a visual-modality answer-grounding
   metric. ColQwen frames are not OCR'd or judged. The metric only checks
   whether the SURFACED TRANSCRIPT CHUNK (regardless of which retriever
-  surfaced it) quotes what the curator saw on the slide. A real visual
-  answer-grounding metric would need OCR over retrieved frames or a
-  visual judge — both are out of scope for this module.
+  surfaced it) quotes what the curator saw on the slide.
+
+* ``VisualAnswerGrounding@k`` — FRAME-SIDE answer-grounding metric. For
+  rows whose curator filled in ``visual_evidence``, call
+  ``retrieve.visual.retrieve_frames`` to get the top-k frames by the
+  visual channel, OCR each retrieved frame's PNG, and check whether at
+  least one frame both (a) overlaps the gold span on the right video
+  (open-interval ± ``FRAME_SAMPLE_EVERY_SEC`` tolerance, same as
+  ``VisualFrameRecall@k``) AND (b) has OCR text satisfying the same
+  conjunction-of-disjunctions rule as ``chunk_text_contains_evidence``.
+  This is the only metric in the module that actually validates a
+  visual model surfaced an answer-bearing frame. Reported as a
+  STANDALONE rate, not a lift: the 4-channel text RRF retrieves chunks
+  not frames, so a "without-visual" baseline is not meaningful here.
+  If the rate is high, the visual channel grounds answers; if low, it
+  does not. The text-side ``AnswerTermHit@k`` is the paired number for
+  context — both are computed per row when evidence is provided.
+
+  OCR backend: ``pytesseract`` against locally-installed Tesseract
+  (``brew install tesseract``). PSM 3 (fully automatic page
+  segmentation, default) + English language model. Documented in the
+  methodology MDX. Tesseract is a deterministic tool, not an LLM, so
+  the constant lives next to the primitive rather than under the
+  ``model_candidates.yaml`` ADR-004 selection rule.
 
 * ``VisualLift@k`` — for each visual_gold example, compare a 5-channel
   RRF (BM25 + dense + sparse + multivec + visual) against the 4-channel
@@ -63,6 +84,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import psycopg
@@ -71,11 +93,25 @@ from retrieve import bm25, dense, multivec, rrf, sparse, visual
 from retrieve.types import ChannelResult, FusedResult
 from retrieve.visual import FrameResult
 
+# OCR configuration for VisualAnswerGrounding@k. Tesseract is a tool
+# (deterministic, no model selection ADR), so the constants live here
+# next to the primitive. PSM 3 is the default fully-automatic page
+# segmentation mode — empirically the best Tesseract behaviour on the
+# 360p slide frames currently in the substrate (PSM 6 collapses
+# multi-column slide layouts). ENG is sufficient for the current corpus
+# (English-language conference talks). Document any changes in the
+# methodology MDX so the kappa/grounding numbers stay reproducible.
+_TESSERACT_LANG = "eng"
+_TESSERACT_PSM = 3
+
+# Cap the LRU cache by image_path so a single eval run never re-OCRs
+# the same frame across the with-visual + without-visual stacks or the
+# pooled-then-MaxSim path. 4096 is well above the 529-frame substrate
+# today and gives headroom for v1 (~5x).
+_OCR_CACHE_SIZE = 4096
+
 _VISUAL_GOLD_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "corpora"
-    / "ai_engineering_v0"
-    / "visual_gold.jsonl"
+    Path(__file__).resolve().parent.parent / "corpora" / "ai_engineering_v0" / "visual_gold.jsonl"
 )
 
 # Frame sampling cadence used by ``ingest.frames.sample`` (every_sec=10.0
@@ -318,6 +354,75 @@ def chunk_passes_at_k(
     return False
 
 
+# --- VisualAnswerGrounding@k primitives (frame OCR, no DB) ------------------
+
+
+@lru_cache(maxsize=_OCR_CACHE_SIZE)
+def frame_ocr_text(image_path: str) -> str:
+    """OCR a frame PNG and return the concatenated detected text.
+
+    Pure function on the file at ``image_path``. Cached by path so a
+    single eval run does not re-OCR the same frame across visual_eval's
+    pooled-prefilter path and the chunked-MaxSim path. Tests inject
+    their own ``ocr_fn`` to avoid touching real images.
+
+    Errors (missing file, Tesseract not installed) are NOT swallowed —
+    the metric is undefined for frames that cannot be OCR'd, so the
+    aggregator catches and surfaces them rather than scoring a false
+    pass / fail."""
+    # Imports are inline so the rest of the module doesn't pay the
+    # Pillow + pytesseract import cost when callers stick to the
+    # span-overlap or text-side metrics. Tesseract itself is invoked
+    # by pytesseract as a subprocess on each call.
+    import pytesseract
+    from PIL import Image
+
+    with Image.open(image_path) as img:
+        return pytesseract.image_to_string(
+            img, lang=_TESSERACT_LANG, config=f"--psm {_TESSERACT_PSM}"
+        )
+
+
+OcrFn = Callable[[str], str]
+
+
+def frame_ocr_matches_at_k(
+    frames: Sequence[FrameResult],
+    gold: VisualGoldQuery,
+    evidence: Sequence[VisualEvidenceItem],
+    *,
+    k: int,
+    ocr_fn: OcrFn,
+    tolerance_sec: float = FRAME_SAMPLE_EVERY_SEC,
+) -> bool:
+    """True iff some top-k frame whose ``video_id == gold.video_id`` AND
+    ``frame_sec`` falls inside the gold span (± ``tolerance_sec``) ALSO
+    has OCR text satisfying ``chunk_text_contains_evidence``.
+
+    Combines the existing ``frame_passes_at_k`` window with a per-frame
+    OCR-text check. The OCR text is treated identically to chunk text
+    by ``chunk_text_contains_evidence``: conjunction across items,
+    disjunction within ``required_any``, normalization per item.
+
+    Empty ``evidence`` returns False — the metric is undefined for rows
+    without curator-supplied terms; callers gate this at the aggregator
+    level (see ``visual_answer_grounding_at_k``).
+    """
+    if not evidence:
+        return False
+    lo = gold.start_sec - tolerance_sec
+    hi = gold.end_sec + tolerance_sec
+    for f in frames[:k]:
+        if f.video_id != gold.video_id:
+            continue
+        if not (lo <= f.frame_sec <= hi):
+            continue
+        ocr_text = ocr_fn(f.image_path)
+        if chunk_text_contains_evidence(ocr_text, evidence):
+            return True
+    return False
+
+
 # --- Per-channel measurement loops (DB-bound) ------------------------------
 
 
@@ -454,6 +559,75 @@ def answer_term_hit_at_k(
     return score, passes, top_ks
 
 
+# TODO(v4): Replace the boolean return with a structured audit payload so any
+# future `vag = true` row can be defended. The 0/10 result on the 2026-05-28
+# headline run does not depend on this, but any positive result from a future
+# 720p re-ingest does. Minimum payload fields documented in
+# `eval/reports/2026-05-28_visual_eval_v3/integrity_check.md` §B:
+# evaluated_frame_ids, evaluated_image_paths, ocr_excerpts, matched_term,
+# failure_reason.
+def visual_answer_grounding_at_k(
+    conn: psycopg.Connection,
+    examples: Sequence[VisualGoldQuery],
+    evidence_by_example: dict[str, Sequence[VisualEvidenceItem]],
+    *,
+    k: int = 5,
+    tolerance_sec: float = FRAME_SAMPLE_EVERY_SEC,
+    frame_fn: FrameFn | None = None,
+    ocr_fn: OcrFn | None = None,
+) -> tuple[float, list[bool | None], list[list[dict]]]:
+    """Aggregate VisualAnswerGrounding@k over ``examples``.
+
+    Frame-side answer-grounding: for each example with curator-supplied
+    ``visual_evidence``, fetch the top-k frames from the visual channel
+    (default ``retrieve.visual.retrieve_frames``), OCR each frame's PNG
+    (default ``frame_ocr_text``), and pass iff at least one returned
+    frame on the right video, inside the gold span ± tolerance, has OCR
+    text satisfying the curator-supplied conjunction.
+
+    For each example:
+
+    * If ``evidence_by_example`` has no (or empty) entry for the example,
+      that row is NOT evaluable — its slot in ``per_example_passes`` is
+      ``None``, and it contributes to neither the numerator nor the
+      denominator of the returned ``score``.
+    * Otherwise, the row passes iff ``frame_ocr_matches_at_k`` is True.
+
+    Returns ``(score, per_example_passes, per_example_top_k_frames)``.
+    ``score`` is the mean over evaluable rows only. If no rows are
+    evaluable, ``score`` is 0.0 — callers should also inspect the
+    per-example list and the n_evaluable count before interpreting the
+    headline number.
+
+    This is the only metric in the module that validates the visual
+    channel surfaced an answer-bearing frame. See module docstring for
+    why it is reported as a standalone rate, not as a lift against
+    text-only retrieval."""
+    fn = frame_fn or (lambda c, q: visual.retrieve_frames(c, q, top_k=k))
+    ocr = ocr_fn or frame_ocr_text
+    if not examples:
+        return 0.0, [], []
+    passes: list[bool | None] = []
+    top_ks: list[list[dict]] = []
+    n_evaluable = 0
+    n_pass = 0
+    for ex in examples:
+        frames = list(fn(conn, ex.question))
+        top_ks.append([_frame_to_dict(f) for f in frames[:k]])
+        evidence = evidence_by_example.get(ex.example_id) or ()
+        if not evidence:
+            passes.append(None)
+            continue
+        hit = frame_ocr_matches_at_k(
+            frames, ex, evidence, k=k, ocr_fn=ocr, tolerance_sec=tolerance_sec
+        )
+        passes.append(hit)
+        n_evaluable += 1
+        n_pass += int(hit)
+    score = (n_pass / n_evaluable) if n_evaluable else 0.0
+    return score, passes, top_ks
+
+
 def _rrf_with_visual(conn: psycopg.Connection, q: str, *, k: int) -> list[FusedResult]:
     b = bm25.retrieve(conn, q, top_k=30)
     d = dense.retrieve(conn, q, top_k=30)
@@ -582,6 +756,7 @@ def measure_visual(
     tolerance_sec: float = FRAME_SAMPLE_EVERY_SEC,
     include_lift: bool = True,
     evidence_by_example: dict[str, Sequence[VisualEvidenceItem]] | None = None,
+    ocr_fn: OcrFn | None = None,
 ) -> tuple[dict, dict[str, dict]]:
     """Run all visual metrics and return ``(summary, per_example_detail)``
     in the same shape ``eval.runners.measure_embeddings.measure_all_channels``
@@ -593,30 +768,48 @@ def measure_visual(
     BOTH the visual stack AND the text stack to be populated for the
     same examples — and on tiny dev sets the result is mostly anecdotal.
 
-    ``evidence_by_example`` enables the text-side answer-term metric
-    (``AnswerTermHit@k``). When provided, rows whose example_id maps
-    to at least one ``VisualEvidenceItem`` are scored against the
-    span-overlap-AND-required-terms-in-chunk-text gate; rows without
-    evidence are skipped from the headline answer-term rate (numerator
-    and denominator both unaffected). The lift block also gains an
-    answer-term tier when evidence is provided. None is the back-compat
-    default. The metric does NOT validate against frames, OCR, or a
-    visual judge — see module docstring."""
+    ``evidence_by_example`` enables BOTH curator-evidence-bearing
+    metrics:
+
+    * ``AnswerTermHit@k`` (text side) — span overlap AND required terms
+      in chunk transcript text.
+    * ``VisualAnswerGrounding@k`` (frame side) — top-k visual-channel
+      frames + OCR + required terms in OCR text.
+
+    Rows whose example_id maps to at least one ``VisualEvidenceItem``
+    are scored against both gates; rows without evidence are skipped
+    from BOTH headline rates (numerator and denominator unaffected).
+    The lift block gains an answer-term tier when evidence is provided
+    (text-side only — there is no meaningful "without visual" baseline
+    for frame OCR). None is the back-compat default.
+
+    ``ocr_fn`` is injectable for tests so the real Tesseract subprocess
+    is not invoked on every fast test. Defaults to ``frame_ocr_text``."""
     evidence_by_example = evidence_by_example or {}
     frame_score, frame_passes, frame_topks = visual_frame_recall_at_k(
         conn, examples, k=k, tolerance_sec=tolerance_sec
     )
-    chunk_score, chunk_passes, chunk_topks = visual_chunk_tr_at_k(
-        conn, examples, k=k
-    )
+    chunk_score, chunk_passes, chunk_topks = visual_chunk_tr_at_k(conn, examples, k=k)
     answer_term_passes: list[bool | None] = [None] * len(examples)
     answer_term_score = 0.0
     n_evaluable = 0
+    grounding_passes: list[bool | None] = [None] * len(examples)
+    grounding_score = 0.0
+    n_grounding_evaluable = 0
     if evidence_by_example:
         answer_term_score, answer_term_passes, _at_topks = answer_term_hit_at_k(
             conn, examples, evidence_by_example, k=k
         )
         n_evaluable = sum(1 for p in answer_term_passes if p is not None)
+        grounding_score, grounding_passes, _g_topks = visual_answer_grounding_at_k(
+            conn,
+            examples,
+            evidence_by_example,
+            k=k,
+            tolerance_sec=tolerance_sec,
+            ocr_fn=ocr_fn,
+        )
+        n_grounding_evaluable = sum(1 for p in grounding_passes if p is not None)
 
     summary: dict = {
         "visual_frame_recall_at_k": frame_score,
@@ -629,9 +822,15 @@ def measure_visual(
                 "frame_pass": bool(fp),
                 "chunk_pass": bool(cp),
                 "answer_term_hit": at,  # may be None (row not evaluable)
+                "visual_answer_grounding": vg,  # may be None (row not evaluable)
             }
-            for ex, fp, cp, at in zip(
-                examples, frame_passes, chunk_passes, answer_term_passes, strict=True
+            for ex, fp, cp, at, vg in zip(
+                examples,
+                frame_passes,
+                chunk_passes,
+                answer_term_passes,
+                grounding_passes,
+                strict=True,
             )
         },
     }
@@ -639,6 +838,9 @@ def measure_visual(
         summary["answer_term_hit_at_k"] = answer_term_score
         summary["answer_term_hit_n_evaluable"] = n_evaluable
         summary["answer_term_hit_n_skipped"] = len(examples) - n_evaluable
+        summary["visual_answer_grounding_at_k"] = grounding_score
+        summary["visual_answer_grounding_n_evaluable"] = n_grounding_evaluable
+        summary["visual_answer_grounding_n_skipped"] = len(examples) - n_grounding_evaluable
 
     per_example_detail: dict[str, dict] = {
         ex.example_id: {
@@ -650,14 +852,16 @@ def measure_visual(
             "frame_pass_at_k": bool(fp),
             "chunk_pass_at_k": bool(cp),
             "answer_term_hit_at_k": at,
+            "visual_answer_grounding_at_k": vg,
             "top_k_frames": ftk,
             "top_k_chunks": ctk,
         }
-        for ex, fp, cp, at, ftk, ctk in zip(
+        for ex, fp, cp, at, vg, ftk, ctk in zip(
             examples,
             frame_passes,
             chunk_passes,
             answer_term_passes,
+            grounding_passes,
             frame_topks,
             chunk_topks,
             strict=True,
@@ -665,9 +869,7 @@ def measure_visual(
     }
 
     if include_lift and examples:
-        lift = visual_lift_at_k(
-            conn, examples, k=k, evidence_by_example=evidence_by_example
-        )
+        lift = visual_lift_at_k(conn, examples, k=k, evidence_by_example=evidence_by_example)
         summary["visual_lift"] = {
             "with_visual_pass_rate": lift["with_visual_pass_rate"],
             "without_visual_pass_rate": lift["without_visual_pass_rate"],

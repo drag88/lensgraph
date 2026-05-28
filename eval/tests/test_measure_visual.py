@@ -20,11 +20,13 @@ from eval.runners.measure_visual import (
     answer_term_matches_at_k,
     chunk_passes_at_k,
     chunk_text_contains_evidence,
+    frame_ocr_matches_at_k,
     frame_passes_at_k,
     load_visual_evidence,
     load_visual_gold,
     measure_visual,
     normalize_text,
+    visual_answer_grounding_at_k,
     visual_chunk_tr_at_k,
     visual_frame_recall_at_k,
     visual_lift_at_k,
@@ -44,9 +46,7 @@ def _frame(*, frame_id=1, video_id="v1", frame_sec=170.0, rank=1) -> FrameResult
     )
 
 
-def _chunk(
-    *, chunk_id=1, video_id="v1", start=160.0, end=180.0, rank=1, text="t"
-) -> ChannelResult:
+def _chunk(*, chunk_id=1, video_id="v1", start=160.0, end=180.0, rank=1, text="t") -> ChannelResult:
     return ChannelResult(
         chunk_id=chunk_id,
         video_id=video_id,
@@ -102,9 +102,7 @@ def test_frame_fail_when_outside_tolerance():
 def test_frame_pass_only_within_top_k():
     g = _gold(170, 180)
     # Matching frame is at rank 6 — top-5 should miss it.
-    frames = [_frame(frame_sec=400, rank=i) for i in range(1, 6)] + [
-        _frame(frame_sec=175, rank=6)
-    ]
+    frames = [_frame(frame_sec=400, rank=i) for i in range(1, 6)] + [_frame(frame_sec=175, rank=6)]
     assert not frame_passes_at_k(frames, g, k=5)
     assert frame_passes_at_k(frames, g, k=6)
 
@@ -170,9 +168,11 @@ def test_visual_chunk_tr_aggregates():
     examples = [_gold(170, 180, ex_id="a"), _gold(300, 320, ex_id="b")]
 
     def stub_chunks(_conn, q):
-        return [_chunk(start=165, end=175)] if q == examples[0].question else [
-            _chunk(start=400, end=410)
-        ]
+        return (
+            [_chunk(start=165, end=175)]
+            if q == examples[0].question
+            else [_chunk(start=400, end=410)]
+        )
 
     score, passes, _top_ks = visual_chunk_tr_at_k(
         conn=None, examples=examples, k=5, chunk_fn=stub_chunks
@@ -204,24 +204,30 @@ def test_measure_visual_shape_matches_runner_contract(monkeypatch):
     monkeypatch.setattr(
         visual_mod, "retrieve_frames", lambda _c, _q, top_k: [_frame(frame_sec=175)]
     )
-    monkeypatch.setattr(
-        visual_mod, "retrieve", lambda _c, _q, top_k: [_chunk(start=165, end=175)]
-    )
+    monkeypatch.setattr(visual_mod, "retrieve", lambda _c, _q, top_k: [_chunk(start=165, end=175)])
 
     summary, detail = mod.measure_visual(conn=None, examples=examples, include_lift=False)
     assert summary["n_examples"] == 1
     assert summary["visual_frame_recall_at_k"] == 1.0
     assert summary["visual_chunk_tr_at_k"] == 1.0
-    # `answer_term_hit` is None when evidence_by_example is not supplied — the
-    # row is not evaluable, not "failed". Tests for the populated case
-    # live further down (see test_answer_term_hit_at_k_*).
-    assert set(summary["per_example"]["a"]) == {"frame_pass", "chunk_pass", "answer_term_hit"}
+    # `answer_term_hit` and `visual_answer_grounding` are None when
+    # evidence_by_example is not supplied — the row is not evaluable,
+    # not "failed". Tests for the populated cases live further down
+    # (see test_answer_term_hit_at_k_* and test_visual_answer_grounding_*).
+    assert set(summary["per_example"]["a"]) == {
+        "frame_pass",
+        "chunk_pass",
+        "answer_term_hit",
+        "visual_answer_grounding",
+    }
     assert summary["per_example"]["a"]["answer_term_hit"] is None
+    assert summary["per_example"]["a"]["visual_answer_grounding"] is None
     assert set(detail["a"]) == {
         "gold_span",
         "frame_pass_at_k",
         "chunk_pass_at_k",
         "answer_term_hit_at_k",
+        "visual_answer_grounding_at_k",
         "top_k_frames",
         "top_k_chunks",
     }
@@ -454,8 +460,7 @@ def test_scripts_shim_delegates_to_canonical_main():
     from eval.runners.run_visual_eval import main as canonical_main
 
     assert shim.main is canonical_main, (
-        "shim main must be the canonical eval.runners.run_visual_eval.main "
-        "(no duplicated logic)"
+        "shim main must be the canonical eval.runners.run_visual_eval.main (no duplicated logic)"
     )
 
 
@@ -560,9 +565,7 @@ def test_chunk_text_contains_evidence_single_item_disjunction():
         "the slide shows Price per Million Tokens on the x-axis", [item]
     )
     # Neither term appears → fails.
-    assert not chunk_text_contains_evidence(
-        "the speaker discusses retrieval at length", [item]
-    )
+    assert not chunk_text_contains_evidence("the speaker discusses retrieval at length", [item])
 
 
 def test_chunk_text_contains_evidence_multi_item_conjunction():
@@ -570,7 +573,9 @@ def test_chunk_text_contains_evidence_multi_item_conjunction():
     (Across items is conjunction; within an item is disjunction.)"""
     items = [
         VisualEvidenceItem(visual_element="y-axis label", required_any=("NDCG@10",)),
-        VisualEvidenceItem(visual_element="x-axis label", required_any=("price per million tokens",)),
+        VisualEvidenceItem(
+            visual_element="x-axis label", required_any=("price per million tokens",)
+        ),
     ]
     # Both axis labels mentioned → passes.
     assert chunk_text_contains_evidence(
@@ -592,9 +597,7 @@ def test_chunk_text_contains_evidence_exact_normalize_case_sensitive():
     )
     assert chunk_text_contains_evidence("we set is_resumable=True in the config", [item])
     # Different case → fails under `exact`.
-    assert not chunk_text_contains_evidence(
-        "we set IS_RESUMABLE=true in the config", [item]
-    )
+    assert not chunk_text_contains_evidence("we set IS_RESUMABLE=true in the config", [item])
 
 
 # ---- answer_term_matches_at_k -----------------------------------------------------
@@ -653,9 +656,7 @@ def test_answer_term_matches_distinguishes_topical_chunk_from_answer_bearing_chu
         video_id="nXafozNIk3c",
         start=2020,
         end=2030,
-        text=(
-            "the code wires resumability_config=ResumabilityConfig(is_resumable=True)"
-        ),
+        text=("the code wires resumability_config=ResumabilityConfig(is_resumable=True)"),
         rank=2,
     )
     # Sanity: both pass the span-only metric.
@@ -750,8 +751,7 @@ def test_load_visual_evidence_parses_committed_visual_gold():
 
     out = load_visual_evidence(_VISUAL_GOLD_PATH)
     assert len(out) == 10, (
-        "expected 10 visual-required rows with visual_evidence; got "
-        f"{len(out)} ({sorted(out)})"
+        f"expected 10 visual-required rows with visual_evidence; got {len(out)} ({sorted(out)})"
     )
     # Every loaded key should begin with the visual-required prefix per
     # the curator playbook.
@@ -778,11 +778,246 @@ def test_load_visual_evidence_empty_required_any_raises_valueerror(tmp_path):
                 "curator": "tester",
                 "curated_at": "2026-05-27T00:00:00Z",
                 "verified": True,
-                "visual_evidence": [
-                    {"visual_element": "plot legend", "required_any": []}
-                ],
+                "visual_evidence": [{"visual_element": "plot legend", "required_any": []}],
             }
         )
     )
     with pytest.raises(ValueError, match="empty required_any"):
         load_visual_evidence(p)
+
+
+# ---- frame_ocr_matches_at_k ---------------------------------------------
+
+
+def test_frame_ocr_matches_at_k_passes_when_window_and_terms_hit():
+    """Frame inside the gold span on the right video AND OCR text
+    satisfies the curator-supplied conjunction → pass."""
+    g = _gold(2010, 2030, video="nXafozNIk3c", ex_id="resumability")
+    frames = [
+        _frame(video_id="nXafozNIk3c", frame_sec=2020, frame_id=1),
+    ]
+    evidence = [
+        VisualEvidenceItem(
+            visual_element="code identifier",
+            required_any=("is_resumable=True", "ResumabilityConfig"),
+        )
+    ]
+    canned = {
+        "/tmp/1.png": (
+            "app = App(name='my_resumable_agent', "
+            "resumability_config=ResumabilityConfig(is_resumable=True))"
+        ),
+    }
+    assert frame_ocr_matches_at_k(frames, g, evidence, k=5, ocr_fn=lambda p: canned[p])
+
+
+def test_frame_ocr_matches_at_k_fails_when_video_mismatch():
+    """Right span but wrong video → no match. The metric does not pass
+    on cross-video coincidences (e.g. the same code identifier appearing
+    in a different talk's slide)."""
+    g = _gold(2010, 2030, video="nXafozNIk3c", ex_id="resumability")
+    frames = [
+        _frame(video_id="other-video", frame_sec=2020, frame_id=1),
+    ]
+    evidence = [VisualEvidenceItem(visual_element="x", required_any=("is_resumable=True",))]
+    canned = {"/tmp/1.png": "is_resumable=True"}
+    assert not frame_ocr_matches_at_k(frames, g, evidence, k=5, ocr_fn=lambda p: canned[p])
+
+
+def test_frame_ocr_matches_at_k_fails_when_outside_window():
+    """Right video and right terms, but frame_sec falls outside the gold
+    span ± default tolerance → no match."""
+    g = _gold(2010, 2030, video="v1", ex_id="ex")
+    # Tolerance is FRAME_SAMPLE_EVERY_SEC = 10.0, so window is [2000, 2040].
+    frames = [_frame(video_id="v1", frame_sec=2100, frame_id=1)]
+    evidence = [VisualEvidenceItem(visual_element="x", required_any=("hit",))]
+    assert FRAME_SAMPLE_EVERY_SEC == 10.0  # guard
+    assert not frame_ocr_matches_at_k(
+        frames, g, evidence, k=5, ocr_fn=lambda _p: "the hit appears here"
+    )
+
+
+def test_frame_ocr_matches_at_k_only_within_top_k():
+    """Matching frame at rank 6 should miss for top-5."""
+    g = _gold(170, 180, ex_id="ex")
+    frames = [_frame(frame_sec=175, frame_id=i, rank=i) for i in range(1, 6)] + [
+        _frame(frame_sec=175, frame_id=6, rank=6)
+    ]
+    evidence = [VisualEvidenceItem(visual_element="x", required_any=("hit",))]
+    # Only the rank-6 frame has the matching OCR text.
+    canned = {f"/tmp/{i}.png": ("" if i < 6 else "this frame has the hit") for i in range(1, 7)}
+    assert not frame_ocr_matches_at_k(frames, g, evidence, k=5, ocr_fn=lambda p: canned[p])
+    assert frame_ocr_matches_at_k(frames, g, evidence, k=6, ocr_fn=lambda p: canned[p])
+
+
+def test_frame_ocr_matches_at_k_empty_evidence_returns_false():
+    """Undefined-by-design — empty evidence never passes. Callers gate
+    the no-evidence case at the aggregator."""
+    g = _gold(170, 180, ex_id="ex")
+    frames = [_frame(frame_sec=175, frame_id=1)]
+    assert not frame_ocr_matches_at_k(frames, g, [], k=5, ocr_fn=lambda _p: "anything")
+
+
+def test_frame_ocr_distinguishes_code_identifier_from_prose():
+    """Headline regression test.
+
+    Two frames overlap the same gold span on the same video. Both are
+    topically about resumability. Only one frame's OCR text contains
+    the curator-required code identifier ``is_resumable=True``; the
+    other shows only paraphrased prose (``resumability``).
+
+    * ``frame_passes_at_k`` (span-overlap only) → both pass.
+    * ``frame_ocr_matches_at_k`` → only the code-bearing frame passes.
+
+    This is what makes the metric a FRAME-SIDE answer-grounding signal:
+    a topical frame is not enough — the curator-confirmed answer string
+    must literally appear on the slide / screen the visual retriever
+    returned."""
+    g = _gold(2010, 2030, video="nXafozNIk3c", ex_id="resumability")
+    prose_frame = _frame(video_id="nXafozNIk3c", frame_sec=2015, frame_id=1, rank=1)
+    code_frame = _frame(video_id="nXafozNIk3c", frame_sec=2025, frame_id=2, rank=2)
+    canned = {
+        "/tmp/1.png": "Resumability lets the agent pick up where it left off",
+        "/tmp/2.png": (
+            "app = App(name='my_resumable_agent', "
+            "resumability_config=ResumabilityConfig(is_resumable=True))"
+        ),
+    }
+    # Span-overlap alone: both pass.
+    from eval.runners.measure_visual import frame_passes_at_k as _fp
+
+    assert _fp([prose_frame], g, k=5)
+    assert _fp([code_frame], g, k=5)
+    # Frame OCR grounding: only the code-bearing frame passes.
+    evidence = [
+        VisualEvidenceItem(
+            visual_element="code identifier",
+            required_any=("is_resumable=True", "ResumabilityConfig"),
+            normalize="exact",
+        )
+    ]
+    assert not frame_ocr_matches_at_k([prose_frame], g, evidence, k=5, ocr_fn=lambda p: canned[p])
+    assert frame_ocr_matches_at_k([code_frame], g, evidence, k=5, ocr_fn=lambda p: canned[p])
+
+
+# ---- visual_answer_grounding_at_k (aggregator) ---------------------------
+
+
+def test_visual_answer_grounding_at_k_skips_rows_without_evidence():
+    """Rows without curator visual_evidence are not-evaluable: they
+    contribute None to per-example passes and to neither the numerator
+    nor the denominator of the headline rate. Same None-skip semantics
+    as ``answer_term_hit_at_k``."""
+    examples = [
+        _gold(170, 180, ex_id="a"),  # evidence present, will pass
+        _gold(300, 320, ex_id="b"),  # NO evidence — skipped
+        _gold(500, 520, ex_id="c"),  # evidence present, will fail
+    ]
+    evidence_by_example: dict[str, list[VisualEvidenceItem]] = {
+        "a": [VisualEvidenceItem(visual_element="x", required_any=("hit",))],
+        "c": [VisualEvidenceItem(visual_element="x", required_any=("missing-term",))],
+    }
+
+    def stub_frames(_c, q):
+        ex = next(e for e in examples if e.question == q)
+        # Sample a frame inside the gold span; image_path encodes example.
+        return [
+            _frame(
+                video_id=ex.video_id,
+                frame_sec=(ex.start_sec + ex.end_sec) / 2,
+                frame_id=hash(ex.example_id) & 0xFFFF,
+            )
+        ]
+
+    def stub_ocr(_path):
+        return "this frame contains the HIT term"
+
+    score, passes, top_ks = visual_answer_grounding_at_k(
+        conn=None,
+        examples=examples,
+        evidence_by_example=evidence_by_example,
+        k=5,
+        frame_fn=stub_frames,
+        ocr_fn=stub_ocr,
+    )
+    # Denominator = 2 (rows a and c). Numerator = 1 (only row a hits).
+    assert score == 0.5
+    assert passes == [True, None, False]
+    assert len(top_ks) == 3
+    # Even the skipped row gets its top-k captured for the methodology MDX.
+    assert len(top_ks[1]) == 1
+
+
+def test_visual_answer_grounding_at_k_all_rows_lack_evidence_returns_zero():
+    """When no rows are evaluable, the headline score collapses to 0.0
+    and per-example slots are all None. Mirrors AnswerTermHit@k."""
+    examples = [_gold(170, 180, ex_id="a"), _gold(300, 320, ex_id="b")]
+
+    def stub_frames(_c, _q):
+        return [_frame(frame_sec=175, frame_id=1)]
+
+    score, passes, top_ks = visual_answer_grounding_at_k(
+        conn=None,
+        examples=examples,
+        evidence_by_example={},
+        k=5,
+        frame_fn=stub_frames,
+        ocr_fn=lambda _p: "anything",
+    )
+    assert score == 0.0
+    assert passes == [None, None]
+    assert len(top_ks) == 2
+
+
+def test_visual_answer_grounding_at_k_empty_examples_returns_zero():
+    """Empty input → zero score, empty lists. Matches the contract of
+    the other aggregators."""
+    score, passes, top_ks = visual_answer_grounding_at_k(
+        conn=None,
+        examples=[],
+        evidence_by_example={"x": [VisualEvidenceItem(visual_element="x", required_any=("y",))]},
+        k=5,
+        frame_fn=lambda _c, _q: [],
+        ocr_fn=lambda _p: "",
+    )
+    assert score == 0.0
+    assert passes == []
+    assert top_ks == []
+
+
+def test_measure_visual_surfaces_visual_answer_grounding_when_evidence_supplied(monkeypatch):
+    """End-to-end shape check: when ``evidence_by_example`` is supplied,
+    ``measure_visual`` surfaces ``visual_answer_grounding_at_k`` +
+    ``_n_evaluable`` + ``_n_skipped`` in the summary AND
+    ``visual_answer_grounding_at_k`` in the per-example detail."""
+    examples = [
+        _gold(170, 180, ex_id="a", video="v1"),
+        _gold(300, 320, ex_id="b", video="v1"),  # no evidence — skipped
+    ]
+    evidence_by_example = {"a": [VisualEvidenceItem(visual_element="code", required_any=("hit",))]}
+
+    from eval.runners import measure_visual as mod
+
+    monkeypatch.setattr(
+        mod.visual,
+        "retrieve_frames",
+        lambda _c, _q, top_k: [_frame(frame_sec=175, frame_id=1)],
+    )
+    monkeypatch.setattr(
+        mod.visual,
+        "retrieve",
+        lambda _c, _q, top_k: [_chunk(start=171, end=179, text="hit appears here")],
+    )
+
+    summary, detail = mod.measure_visual(
+        conn=None,
+        examples=examples,
+        evidence_by_example=evidence_by_example,
+        include_lift=False,
+        ocr_fn=lambda _p: "hit",
+    )
+    assert summary["visual_answer_grounding_at_k"] == 1.0
+    assert summary["visual_answer_grounding_n_evaluable"] == 1
+    assert summary["visual_answer_grounding_n_skipped"] == 1
+    assert detail["a"]["visual_answer_grounding_at_k"] is True
+    assert detail["b"]["visual_answer_grounding_at_k"] is None

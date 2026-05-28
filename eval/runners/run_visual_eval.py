@@ -54,10 +54,7 @@ from db.conn import dsn as resolve_dsn
 from db.repos import eval_runs
 
 _CONFIG_PATH = (
-    Path(__file__).resolve().parent.parent.parent
-    / "eval"
-    / "config"
-    / "model_candidates.yaml"
+    Path(__file__).resolve().parent.parent.parent / "eval" / "config" / "model_candidates.yaml"
 )
 
 
@@ -76,12 +73,7 @@ def resolve_visual_candidate_id(cfg: dict) -> str:
     provider. Require exactly one match so adding a second local
     candidate forces an explicit choice rather than a silent default.
     """
-    options = (
-        cfg.get("candidates", {})
-        .get("visual_retrieval", {})
-        .get("options", [])
-        or []
-    )
+    options = cfg.get("candidates", {}).get("visual_retrieval", {}).get("options", []) or []
     local = [o for o in options if isinstance(o, dict) and o.get("provider") == "local"]
     if len(local) != 1:
         raise RuntimeError(
@@ -132,10 +124,16 @@ def _write_per_example_results(
     ``run_id``. ``system_output`` carries the gold span + per-channel
     top-k frames/chunks; ``metrics`` carries the pass booleans."""
     for example_id, detail in per_example_detail.items():
+        # TODO(v4): Replace the visual_answer_grounding_at_k bool with a
+        # structured audit payload (evaluated_frame_ids, ocr_excerpts,
+        # matched_term, failure_reason). Required before any future positive
+        # VisualAnswerGrounding result can be defended in a report. See
+        # eval/reports/2026-05-28_visual_eval_v3/integrity_check.md §B.
         metrics = {
             "frame_pass_at_k": detail["frame_pass_at_k"],
             "chunk_pass_at_k": detail["chunk_pass_at_k"],
             "answer_term_hit_at_k": detail.get("answer_term_hit_at_k"),
+            "visual_answer_grounding_at_k": detail.get("visual_answer_grounding_at_k"),
         }
         if "lift" in detail:
             metrics["lift"] = detail["lift"]
@@ -262,14 +260,20 @@ def main(argv: list[str] | None = None) -> int:
             candidate_set_yaml=cfg,
             summary=summary,
         )
-        _write_per_example_results(
-            conn, run_id=run_id, per_example_detail=per_example_detail
-        )
+        _write_per_example_results(conn, run_id=run_id, per_example_detail=per_example_detail)
 
+    grounding = summary.get("visual_answer_grounding_at_k")
+    grounding_n = summary.get("visual_answer_grounding_n_evaluable", 0)
+    grounding_str = (
+        f"answer_grounding@{args.k}={grounding:.3f} (n_eval={grounding_n}), "
+        if grounding is not None
+        else ""
+    )
     sys.stdout.write(
         f"visual_eval written: {run_id} "
         f"(frame_recall@{args.k}={summary['visual_frame_recall_at_k']:.3f}, "
         f"chunk_tr@{args.k}={summary['visual_chunk_tr_at_k']:.3f}, "
+        f"{grounding_str}"
         f"n={summary['n_examples']})\n"
     )
     return 0
