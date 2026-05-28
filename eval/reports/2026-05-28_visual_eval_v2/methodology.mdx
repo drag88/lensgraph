@@ -1,0 +1,157 @@
+# Visual retrieval eval v2 — text-side answer-term diagnostic
+
+Date: 2026-05-28
+Run ID: `visual-eval-b3e64cf97a6b` (regenerated after the metric rename; supersedes the earlier `visual-eval-0f1487296367` only as the headline numbers source — both rows are kept in `eval_runs`).
+Component: `visual_retrieval` (ColQwen2.5 via `colpali-engine`)
+Candidate id: `colqwen2.5` (resolved from `eval/config/model_candidates.yaml`)
+Eval code path: `eval_runs.code_path = 'visual_eval'`
+
+## What changed since 2026-05-27
+
+The 2026-05-27 run reported `lift = -5.56 pp` and labelled it NON-ACTIONABLE because the 4-channel text RRF passed 18/18 on the visual-required slice — span overlap is the wrong gate when the answer-bearing content lives on the slide and the speaker is talking topically around the same window. This run adds a new metric, `AnswerTermHit@k`, that asks a stricter question of the same retrieval: did the surfaced chunk's TRANSCRIPT TEXT contain the curator-supplied answer-bearing strings (e.g. `NDCG@10`, `is_resumable=True`, `RecoverableExceptions`, jq fragments)? The new metric is reported alongside the existing `VisualChunkTR@k`, not in place of it.
+
+## Important scope statement (what the new metric is, and is not)
+
+`AnswerTermHit@k` is a **text-side diagnostic**. It validates whether the SURFACED TRANSCRIPT CHUNK quotes the answer-bearing strings the curator saw on the slide. **It does not validate that any visual model surfaced the right FRAME, and it does not OCR retrieved frames or call a visual judge.** A real visual answer-grounding metric — one that checks whether the retrieved FRAME actually contains the answer — would need OCR over retrieved frame images or a logged visual judge call per frame; both are out of scope here and remain deferred (see "Next concrete steps" below).
+
+The `visual_evidence` field on a `visual_gold` row records terms the curator confirmed on the gold FRAME. The metric uses those terms only as expected strings the TRANSCRIPT CHUNK should contain. The provenance is visual; the check is textual.
+
+## Five-line read
+
+1. The new text-side metric works: the 4-channel text RRF baseline misses 10/10 visual-required examples under `AnswerTermHit@5` (it passed 10/10 under span overlap on this slice). Adding term-presence to the gate is what produces the signal.
+2. The visual channel does not help either: with-visual RRF also misses 10/10 under `AnswerTermHit@5`.
+3. `lift_answer_term_pp = 0.0` because both with-visual and without-visual paths fail every evaluable row. Span-overlap lift is `-5.56 pp` (with visual: 17/18, without visual: 18/18) — one row regresses when visual is added. **No model swap is justified.**
+4. The diagnostic report attributes the standalone visual-channel failures to retrieval stages: 5/10 lose at the pooled HNSW prefilter (gold frame absent from top-200), 4/10 lose at MaxSim (gold-overlapping chunk ranked at 93/94/111 of ~110), 1/10 passes at @5.
+5. ColQwen processor band is not the cause (frames sit inside [3,136 ; 602,112] pixels). The on-disk frames are 360p (640×360), not 720p — the ingester is silently producing lower resolution than the phase-1 design intent. Worth a follow-up.
+
+## Headline numbers
+
+| Metric | Value | Counts | Notes |
+|---|---:|---|---|
+| `VisualFrameRecall@5` (n=18) | **0.056** | 1/18 | standalone `visual.retrieve_frames` |
+| `VisualChunkTR@5` (n=18) | **0.056** | 1/18 | standalone `visual.retrieve`, span overlap |
+| `AnswerTermHit@5` (n_evaluable=10) | **0.000** | 0/10 | TEXT-SIDE; visual-required rows only |
+| `lift_chunk_tr_pp` (n=18) | **-5.56** | with 17/18 · without 18/18 | RRF 5ch vs 4ch, span overlap |
+| `lift_answer_term_pp` (n_evaluable=10) | **0.0** | with 0/10 · without 0/10 | RRF 5ch vs 4ch, text-side |
+
+Lift on the text-side metric is `0.0 pp`. Both with-visual and without-visual paths fail every evaluable example. The visual channel does not help under that gate, and slightly hurts on span overlap (one example regresses when visual is added). Both runs of this eval against the same DB state shift by 1 row in the headline counts; this is non-deterministic tie-breaking in patch retrieval, not a methodology change. Treat `lift_chunk_tr_pp` between `[-5.56, 0]` as the current noise band on n=18.
+
+## Actionability rule (verbatim, corrected)
+
+> `AnswerTermHit@k` is a TEXT-SIDE diagnostic and gives an actionable signal iff `n_evaluable ≥ 5` AND the 4-channel text-only baseline fails the metric on ≥1 evaluable example. Lift on this metric (`lift_answer_term_pp`) measures whether the 5-channel RRF surfaces more answer-term-bearing TRANSCRIPT chunks than the 4-channel RRF; it does NOT imply the visual channel is validated against the slide. The legacy `lift_chunk_tr_pp` (span overlap) is reported alongside but is exploratory only and never alone justifies a candidate change. A true visual answer-grounding metric would need OCR over retrieved frames or a visual judge with logged outputs; both are deferred and tracked under "Next concrete steps."
+
+This run satisfies the text-side gate (`n_evaluable = 10`, without-visual fails 10/10). The text-side metric now has signal. Lift on either tier remains `0.0 pp`, so no candidate change is justified.
+
+## Per-example detail
+
+| Example | tag | frame_pass | chunk_pass | answer_term_hit | with_visual_at | without_visual_at |
+|---|---|:---:|:---:|:---:|:---:|:---:|
+| visual-tengyu-library-analogy-slide | text-saturated | ✗ | ✗ | n/a | n/a | n/a |
+| visual-tengyu-retrieval-accuracy-plot | text-saturated | ✗ | ✗ | n/a | n/a | n/a |
+| visual-tengyu-matryoshka-quantization-slide | text-saturated | ✗ | ✗ | n/a | n/a | n/a |
+| visual-tengyu-query-document-enhancement-slide | text-saturated | ✗ | ✗ | n/a | n/a | n/a |
+| visual-sally-planning-tools-states-finish-gate | text-saturated | ✗ | ✗ | n/a | n/a | n/a |
+| visual-sally-large-json-composable-tools | text-saturated | ✗ | ✗ | n/a | n/a | n/a |
+| visual-google-agent-cli-getting-started-screen | text-saturated | **✓** | ✗ | n/a | n/a | n/a |
+| visual-google-adk2-resume-stopped-agents-screen | text-saturated | ✗ | ✗ | n/a | n/a | n/a |
+| visual-required-tengyu-accuracy-plot-axes | required | ✗ | **✓** | ✗ | ✗ | ✗ |
+| visual-required-tengyu-accuracy-plot-models | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-tengyu-matryoshka-chart-axes | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-tengyu-hybrid-search-diagram | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-sally-current-plan-block | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-sally-jq-grepjson-queries | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-sally-lessons-recoverable-exceptions | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-google-agents-cli-seven-skills-list | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-google-adk-resumability-config-code | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+| visual-required-google-adk-resume-version-and-caveat | required | ✗ | ✗ | ✗ | ✗ | ✗ |
+
+`answer_term_hit = n/a` on the 8 text-saturated rows because they carry no `visual_evidence` array. They contribute to neither the numerator nor the denominator of `AnswerTermHit@5`. They are kept in the corpus for regression coverage on the legacy span-overlap metric.
+
+The single `chunk_pass` on the visual-required slice is `visual-required-tengyu-accuracy-plot-axes` — `visual.retrieve` returns a gold-overlapping chunk, but the chunk's text does not contain any curator-required term (`NDCG@10`, `Retrieval Quality`, `$0.01`, `$0.10`), so the answer-term gate fails. The single `frame_pass` on the text-saturated slice is `visual-google-agent-cli-getting-started-screen` — `visual.retrieve_frames` lands a gold-window frame in the top 5. Both passes are within the noise band on n=18 across reruns.
+
+## Why the text-side baseline fails 10/10
+
+The 4-channel text RRF finds chunks that overlap the gold span via topical relevance, but those chunks' transcript text does not contain the exact answer-bearing strings the curator confirmed on the slide. Two cases pulled from `per_example.jsonl`:
+
+- `visual-required-tengyu-accuracy-plot-axes` — gold span [305, 410] on W_CYk2ogcDI. The text RRF surfaces a topically-relevant chunk that overlaps the gold span (this run also has `visual.retrieve` lands a gold-overlapping chunk standalone — see per_example.jsonl). The chunk's text contains the prose "retrieval quality" loosely but no `NDCG@10`, no `$0.01`, no `$0.10`. The curator's `required_any` terms (NDCG@10 / Retrieval Quality conjoined with $0.01 / $0.10) all miss. Span overlap fires; answer-term does not.
+- `visual-required-google-adk-resumability-config-code` — gold span [2010, 2030] on nXafozNIk3c. The text RRF surfaces a chunk where Shubam talks ABOUT resumability ("resume tracks tools that already ran"). The chunk does not contain `is_resumable=True`, `ResumabilityConfig`, or `name='my_resumable_agent'`. Same gold span overlap; no answer term.
+
+`VisualChunkTR@5` cannot distinguish these two cases. `AnswerTermHit@5` does — on the text side.
+
+## What does NOT change
+
+- ADR 004 v3.1 — no model swap or candidate change is justified. ColQwen2.5 stays in the production loop because (a) the eval gate is quality, not selection, and (b) the corpus shows the visual channel does not help under either gate as currently measured.
+- ADR 005 — the chapter-slice ingest pattern is unchanged. The new finding (frames are 360p, not 720p) is a separate ingester drift, documented in the band check report. It does not invalidate ADR 005's scope.
+- `test_gold.jsonl` — unchanged. Never read by this run.
+
+## What does change
+
+- Schema: `eval/schemas/gold_example.schema.json` now carries an optional `visual_evidence` array. The description explicitly states the metric runs on transcript text, not on frames. Fixtures gate the conditional and the `minItems: 1` rule.
+- Corpus: 10 visual-required rows in `visual_gold.jsonl` carry curator-confirmed `visual_evidence` terms.
+- Metric code: `eval/runners/measure_visual.py` exposes `normalize_text`, `chunk_text_contains_evidence`, `answer_term_matches_at_k` (primitive), `answer_term_hit_at_k` (aggregator). `_chunk_to_dict` now carries `text` so the per-example payload can be inspected.
+- Runner: `eval/runners/run_visual_eval.py` loads `visual_evidence` and writes the text-side metric into `eval_runs.summary` + `eval_results.metrics`.
+
+## Reproducibility
+
+```bash
+# DB up + visual substrate already ingested (3 talks, 529 frames, 163,990 ColQwen patches).
+make db-up
+uv run python -m eval.runners.run_visual_eval
+# → visual_eval written: <new run_id> (frame_recall@5=0.000, chunk_tr@5=0.056, n=18)
+
+# Diagnostics (per-example rank + stage attribution)
+uv run python eval/reports/2026-05-28_visual_diagnostics/run_diagnostics.py
+# → writes rank_curves.jsonl + report.md
+
+# ColQwen processor band check
+PYTHONPATH=. uv run python eval/reports/2026-05-28_visual_diagnostics/run_colqwen_band_check.py
+# → writes colqwen_band_check.md
+```
+
+## DB state at run time
+
+| video_id | pooled frames | frame_patches |
+|---|---:|---:|
+| nXafozNIk3c | 318 | 98,580 |
+| W_CYk2ogcDI | 113 | 35,030 |
+| aie_sg_2026_d2_arize_alyx | 98 | 30,380 |
+| **total** | **529** | **163,990** |
+
+No re-ingest in this session. Substrate captured at commit `ec7b5b7` per ADR 005.
+
+## Methodology guardrails
+
+### `AnswerTermHit@k` (new, text-side)
+
+Pass for a row iff there exists a top-k chunk that (a) overlaps the gold span on the matching video AND (b) every entry in the row's `visual_evidence` has at least one of its `required_any` terms (normalized per the entry's mode) as a substring of the chunk's **transcript text**. Rows without `visual_evidence` are not evaluable and contribute to neither numerator nor denominator.
+
+Normalization modes:
+- `lowercase_collapse_ws` (default) — lowercases and collapses runs of whitespace.
+- `exact` — byte-for-byte. Used for code identifiers, kwarg fragments, exact UI strings, version strings.
+
+### `VisualFrameRecall@k`, `VisualChunkTR@k`, `lift_chunk_tr_pp` (unchanged from 2026-05-27)
+
+Same definitions as the prior report.
+
+## File map
+
+```
+eval/reports/2026-05-28_visual_eval_v2/
+  methodology.mdx     — this file
+  summary.json        — full dump of eval_runs.summary for the new run
+  per_example.jsonl   — 18 rows, one per visual_gold example
+
+eval/reports/2026-05-28_visual_diagnostics/
+  run_diagnostics.py        — per-example rank + stage attribution script
+  rank_curves.jsonl         — 10 rows, one per visual-required example
+  report.md                 — stage-loss attribution + per-example narrative
+  run_colqwen_band_check.py — processor band script
+  colqwen_band_check.md     — band verdict + 360p ingester drift note
+```
+
+## Next concrete steps
+
+1. **A real visual answer-grounding metric.** Either OCR retrieved frames and check curator-supplied terms against the OCR output, or call a visual judge per (retrieved frame, expected visual claim) tuple and log its output. Until one of those lands, the visual eval gate is span overlap + a text-side answer-term diagnostic; visual answer support is not measured.
+2. **Resolve the 720p → 360p ingester drift** flagged in the band check. Check `ingest/frames.py` defaults and ffmpeg invocation against ADR 005 / phase-1 design intent. Re-ingest at the intended resolution. Re-run this eval. Slide-text legibility may improve.
+3. **Stage-1 prefilter ablation** (deferred). Widen `prefilter_k` from 200 to 500 and re-measure standalone visual numbers; the diagnostics report shows 5/10 visual-required rows have the gold frame absent from the top-200 pooled candidates.
+4. **Stage-3 MaxSim diagnosis.** Three of the four stage-3 losses ranked the gold chunk at 93/94/111 of ~110 — near-last. That is not "MaxSim ranked it slightly low" — MaxSim is actively demoting slide-text-heavy candidates. Worth a targeted ablation on the MaxSim aggregation.
