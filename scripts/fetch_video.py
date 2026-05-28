@@ -30,6 +30,7 @@ CLI::
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from collections import defaultdict
@@ -46,11 +47,57 @@ DEFAULT_CORPUS = "ai_engineering_v0"
 # file even if yt-dlp's keyframe-aligned cut drifts by up to one GOP.
 SAFETY_PAD_SEC = 30
 
-# ADR 005 §"Frame-sample resolution": 720p is the working default;
-# verify against ColQwen2_5_Processor.image_processor.min_pixels /
-# max_pixels before locking. The selector falls back gracefully when
-# 720p is not served by the source.
+# ADR 005 §"Frame-sample resolution": 720p is the locked default.
+# ColQwen2.5's processor band is [3,136 ; 602,112] px; 720p (921,600 px)
+# downsamples to ~1034x581 inside the band — well above 360p (230,400 px,
+# pass-through but compression-limited). See band-check report
+# eval/reports/2026-05-28_visual_diagnostics/colqwen_band_check.md.
+#
+# The combined-format fallback `b[height<=720]` was historically a quiet
+# 360p trap: when yt-dlp falls back to format 18 (the only combined
+# format YouTube serves), it silently writes 360p. The post-fetch
+# ffprobe check below makes that failure loud.
+# Requires yt-dlp >= 2026.3.17 to escape SABR throttling on the default
+# player clients.
 YT_DLP_FORMAT = "bv*[height<=720]+ba/b[height<=720]"
+
+# Lower bound on accepted source resolution. 480p is the floor: anything
+# below is the SABR/format-18 fallback path and should fail loudly, not
+# silently land 360p PNGs that destroy slide-text legibility downstream.
+MIN_HEIGHT_PX = 480
+
+
+def _probe_height(path: Path) -> int:
+    """Return the source MP4's video stream height in pixels."""
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=height",
+            "-of",
+            "json",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return int(json.loads(out)["streams"][0]["height"])
+
+
+def _assert_min_height(path: Path) -> None:
+    h = _probe_height(path)
+    if h < MIN_HEIGHT_PX:
+        raise RuntimeError(
+            f"{path}: ffprobe height={h}px is below MIN_HEIGHT_PX={MIN_HEIGHT_PX}px. "
+            f"Likely cause: yt-dlp fell back to format 18 (640x360 combined) "
+            f"because the DASH ladder was SABR-throttled. Upgrade yt-dlp to "
+            f">= 2026.3.17 and re-fetch."
+        )
 
 
 def _strip_query(url: str) -> str:
@@ -106,9 +153,7 @@ def build_commands(
             )
         target_physical = target_talk.get("source_video_id") or target_talk["video_id"]
         relevant = [
-            t
-            for t in talks
-            if (t.get("source_video_id") or t["video_id"]) == target_physical
+            t for t in talks if (t.get("source_video_id") or t["video_id"]) == target_physical
         ]
     else:
         relevant = list(talks)
@@ -169,6 +214,12 @@ def run(commands: list[tuple[Path, list[str], str]]) -> int:
         rc = subprocess.run(argv, check=False).returncode
         if rc != 0:
             sys.stderr.write(f"yt-dlp failed (rc={rc}) for {rel}\n")
+            failures += 1
+            continue
+        try:
+            _assert_min_height(target)
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            sys.stderr.write(f"post-fetch height check failed for {rel}: {exc}\n")
             failures += 1
     return 1 if failures else 0
 

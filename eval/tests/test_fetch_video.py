@@ -5,12 +5,15 @@ network. The actual yt-dlp call is exercised only via the smoke-style
 from __future__ import annotations
 
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
 from scripts.fetch_video import (
     SAFETY_PAD_SEC,
     YT_DLP_FORMAT,
+    _assert_min_height,
     build_commands,
 )
 
@@ -154,3 +157,45 @@ def test_yt_dlp_is_available_on_path():
         "yt-dlp not on PATH; install per ADR 005 (e.g. `uv tool install yt-dlp` "
         "or `pipx install yt-dlp`)"
     )
+
+
+def _synthesize_mp4(path: Path, *, width: int, height: int) -> None:
+    """Generate a tiny 5-frame mp4 with ffmpeg's lavfi `color` source."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=black:s={width}x{height}:r=5:d=1",
+            "-frames:v",
+            "5",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+    )
+
+
+def test_assert_min_height_rejects_360p(tmp_path):
+    """ADR 005 v3: 360p MP4s are the SABR/format-18 quiet-fail signature
+    and must raise loudly with MIN_HEIGHT_PX in the message."""
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not on PATH")
+    target = tmp_path / "tiny_360p.mp4"
+    _synthesize_mp4(target, width=640, height=360)
+    with pytest.raises(RuntimeError, match="MIN_HEIGHT_PX"):
+        _assert_min_height(target)
+
+
+def test_assert_min_height_accepts_720p(tmp_path):
+    """720p is the locked target; the check must stay silent."""
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not on PATH")
+    target = tmp_path / "tiny_720p.mp4"
+    _synthesize_mp4(target, width=1280, height=720)
+    _assert_min_height(target)  # must not raise

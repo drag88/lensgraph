@@ -406,3 +406,15 @@ processor-band verification are still owed and listed explicitly.
 sources, 720p capture by default, one-file-per-source storage,
 `scripts/fetch_video.py` for reproducibility. No code or schema change to
 land the default; implementation slice is reproducibility tooling only.
+
+**2026-05-28 (v3):** Closed the band-check follow-up. ColQwen processor
+band confirmed as `[3,136 ; 602,112]` px; the visual_eval at `ec7b5b7`
+showed 1/8 standalone visual recall because every video on disk was
+640x360, not 720p. Root cause: operator's `yt-dlp 2026.03.03` was
+SABR-throttled by YouTube and silently fell back to format 18 (the only
+combined-stream format served). `yt-dlp 2026.3.17` exposes the full
+DASH ladder without extra flags. Hardened `scripts/fetch_video.py` with
+a post-fetch ffprobe height check (`MIN_HEIGHT_PX = 480`) so future
+SABR throttling fails loudly. Required operator floor: yt-dlp
+>= 2026.3.17. 720p stays the target capture resolution. Re-ingest of
+the existing 3 talks is deferred to a follow-up session.
