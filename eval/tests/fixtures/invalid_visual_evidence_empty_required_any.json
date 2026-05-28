@@ -1,0 +1,17 @@
+{
+  "id": "fixture_visual_evidence_empty_required_any",
+  "question": "On the retrieval accuracy plot, what is the y-axis label?",
+  "video_id": "abc123",
+  "split": "dev",
+  "question_type": "single_clip",
+  "gold_spans": [{ "start_sec": 305, "end_sec": 410 }],
+  "expected_claims": ["The y-axis label is Retrieval Quality (NDCG@10)."],
+  "visual_evidence": [
+    { "visual_element": "plot y-axis label", "required_any": [] }
+  ],
+  "modality": ["slide"],
+  "difficulty": "easy",
+  "verified": true,
+  "curator": "fixture",
+  "curated_at": "2026-05-28T10:00:00Z"
+}

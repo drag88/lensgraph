@@ -1,0 +1,26 @@
+{
+  "id": "fixture_visual_evidence_ok",
+  "question": "On the retrieval accuracy plot, what is the y-axis label and one of the tick values?",
+  "video_id": "abc123",
+  "split": "dev",
+  "question_type": "single_clip",
+  "gold_spans": [{ "start_sec": 305, "end_sec": 410 }],
+  "expected_claims": ["The y-axis label is Retrieval Quality (NDCG@10)."],
+  "visual_evidence": [
+    {
+      "visual_element": "plot y-axis label",
+      "required_any": ["NDCG@10", "Retrieval Quality"],
+      "normalize": "lowercase_collapse_ws"
+    },
+    {
+      "visual_element": "plot x-axis tick",
+      "required_any": ["$0.01", "$0.10"],
+      "normalize": "exact"
+    }
+  ],
+  "modality": ["slide", "diagram"],
+  "difficulty": "easy",
+  "verified": true,
+  "curator": "fixture",
+  "curated_at": "2026-05-28T10:00:00Z"
+}

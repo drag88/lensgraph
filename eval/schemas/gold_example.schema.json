@@ -82,6 +82,34 @@
     "curation_source_version": {
       "type": "string",
       "description": "git SHA of curation tooling used to draft this example."
+    },
+    "visual_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Optional. Curator-supplied required-answer terms confirmed against a specific visual element on the gold frame. When present, the text-side metric (AnswerTermHit@k) runs for this row: each entry asserts that at least one of `required_any` MUST appear, normalized, in the TRANSCRIPT TEXT of some retrieved chunk for the entry to pass. Entries are conjoined (all must pass). The metric does NOT validate the field against any visual model output, OCR, or human-confirmed frame ID; the field name describes provenance (the curator saw the term on the slide), and the check runs on transcript text.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["visual_element", "required_any"],
+        "properties": {
+          "visual_element": {
+            "type": "string",
+            "minLength": 3,
+            "description": "Short label for the visual surface the terms came from (e.g. 'plot y-axis', 'code block', 'slide title'). Audit only — never compared against retrieved text."
+          },
+          "required_any": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Disjunction. The entry passes if ANY one of these normalized terms appears as a substring in the retrieved chunk's normalized text. Terms should be the exact answer-bearing strings the curator confirmed on the frame."
+          },
+          "normalize": {
+            "enum": ["lowercase_collapse_ws", "exact"],
+            "default": "lowercase_collapse_ws",
+            "description": "How the term and the candidate chunk text are normalized before substring compare. `lowercase_collapse_ws` lowercases and collapses runs of whitespace; `exact` is byte-for-byte. Code identifiers and exact UI strings use `exact`."
+          }
+        }
+      }
     }
   },
   "allOf": [
@@ -146,6 +174,18 @@
         ]
       },
       "then": { "not": { "required": ["video_id"] } }
+    },
+    {
+      "if": { "required": ["visual_evidence"] },
+      "then": {
+        "properties": {
+          "modality": {
+            "contains": {
+              "enum": ["slide", "screen_code", "diagram", "whiteboard"]
+            }
+          }
+        }
+      }
     }
   ]
 }
