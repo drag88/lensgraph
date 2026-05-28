@@ -1,0 +1,162 @@
+# Visual retrieval eval v3 — frame-side answer-grounding (OCR)
+
+Date: 2026-05-28
+Run ID: `visual-eval-239f681cbf69`
+Component: `visual_retrieval` (ColQwen2.5 via `colpali-engine`)
+Candidate id: `colqwen2.5` (resolved from `eval/config/model_candidates.yaml`)
+Eval code path: `eval_runs.code_path = 'visual_eval'`
+
+## What this report establishes
+
+The v2 metric `AnswerTermHit@k` was a text-side diagnostic — it checked whether the retrieved TRANSCRIPT chunk's text contained the curator's slide terms. The reviewer correctly flagged that this does not validate the visual channel: ColQwen could surface no frame at all and the metric could still pass via transcript topical overlap.
+
+This run adds `VisualAnswerGrounding@k` — a **frame-side** metric that:
+1. Calls `retrieve.visual.retrieve_frames(conn, query, top_k=5)` to get the top-k frames the visual channel actually surfaced.
+2. For each frame, OCRs the on-disk PNG via `pytesseract` (Tesseract 5.x, PSM 3, eng) and concatenates the detected text.
+3. Passes the row iff some top-k frame both (a) sits within `gold.video_id` and within `[gold.start_sec - 10s, gold.end_sec + 10s]` AND (b) its OCR text contains the curator's `visual_evidence.required_any` terms (same normalization rules as the text-side metric).
+
+If ColQwen retrieves an answer-bearing frame, this metric fires. If not, it fails. There is no transcript-side path that can falsely satisfy it.
+
+## Headline numbers
+
+| Metric | Value | Counts | What it measures |
+|---|---:|---|---|
+| `VisualFrameRecall@5` (n=18) | 0.056 | 1/18 | any top-k frame inside gold window |
+| `VisualChunkTR@5` (n=18) | 0.000 | 0/18 | any top-k chunk overlaps gold span (visual channel only) |
+| `AnswerTermHit@5` (n_eval=10) | 0.000 | 0/10 | TEXT-side — chunk transcript contains answer terms |
+| **`VisualAnswerGrounding@5` (n_eval=10)** | **0.000** | **0/10** | **FRAME-side — retrieved frame's OCR contains answer terms** |
+| `lift_chunk_tr_pp` | -5.56 | with 17/18 · without 18/18 | RRF 5ch vs 4ch span overlap |
+| `lift_answer_term_pp` | 0.0 | with 0/10 · without 0/10 | RRF 5ch vs 4ch text-side |
+
+ColQwen surfaces a frame inside the gold window on 1/18 examples (one of the text-saturated rows, not a visual-required one). On all 10 visual-required rows, the top-5 frames fall outside the gold window entirely — so OCR is not even attempted. Adding the visual channel to the 4-channel text RRF makes span-overlap *worse* by one example.
+
+## Per-example breakdown — visual-required slice
+
+| Example | frame_pass | chunk_pass | answer_term_hit | visual_answer_grounding | Where it failed |
+|---|:---:|:---:|:---:|:---:|---|
+| visual-required-tengyu-accuracy-plot-axes | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [305, 410]) |
+| visual-required-tengyu-accuracy-plot-models | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [305, 410]) |
+| visual-required-tengyu-matryoshka-chart-axes | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [405, 510]) |
+| visual-required-tengyu-hybrid-search-diagram | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [460, 520]) |
+| visual-required-sally-current-plan-block | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [314, 360]) |
+| visual-required-sally-jq-grepjson-queries | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [546, 600]) |
+| visual-required-sally-lessons-recoverable-exceptions | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [590, 625]) |
+| visual-required-google-agents-cli-seven-skills-list | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [520, 595]) |
+| visual-required-google-adk-resumability-config-code | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [2010, 2030]) — top frame at 480s, 290s outside window |
+| visual-required-google-adk-resume-version-and-caveat | ✗ | ✗ | ✗ | ✗ | window gate (no frame in [2000, 2030]) |
+
+Verified directly from `per_example.jsonl` `top_k_frames`: e.g. for `adk-resumability-config-code` (gold [2010, 2030] on nXafozNIk3c), the top-2 retrieved frames are at frame_sec=480 and 2320 — both far outside the 10-second tolerance band. None of the 10 visual-required rows had a frame retrieved within tolerance.
+
+## Conclusion — defensible failure with named next fix
+
+**ColQwen2.5, ingested at 360p source (h264, ~88 kbps), does not surface answer-bearing frames for slide-text-heavy queries on this corpus.** All 10 visual-required rows fail at the **window gate** — the visual channel doesn't even bring the right frame into the top-5. OCR is operationally correct (tested via fast tests with mocked `ocr_fn`; pytesseract + Tesseract 5.x are installed and importable), but irrelevant: the upstream retrieval doesn't surface a frame to OCR.
+
+This matches the diagnostic report at `eval/reports/2026-05-28_visual_diagnostics/report.md` from the prior session: 5/10 lose at stage 1 (pooled HNSW prefilter — gold frame absent from top-200), 4/10 lose at stage 3 (MaxSim demotion to ~last). The new frame-side metric confirms the *consequence* of those retrieval losses: zero answer grounding on any visual-required row.
+
+### Next concrete fix (operator action + follow-up session)
+
+1. **Operator bumps yt-dlp to >= 2026.3.17.** `scripts/fetch_video.py` was hardened this session to fail loudly via `MIN_HEIGHT_PX = 480` if the SABR fallback writes 360p again — see `docs/decisions/005-chapter-slice-ingest.md` v3.
+2. **Re-fetch the 3 talks at 720p.** The MP4s in `videos/ai_engineering_v0/` are all 640x360 today; YouTube serves 720p on every one if yt-dlp can see the full DASH ladder.
+3. **Re-ingest.** Run `scripts/drain_ingest_queue.py` for `ingest_frames` and `ingest_embed_frames`. Expect ~30 min on Mac MPS.
+4. **Re-run this eval.** `uv run python -m eval.runners.run_visual_eval`. ColQwen will see 720p frames downsampled to ~1034x581 inside the processor band (~2.5x the current 230 kpx). Slide text legibility should improve materially; whether ColQwen's pooled cosine retrieves the right frame is the real test.
+5. **Run the deferred ablation.** `uv run python eval/reports/2026-05-28_visual_ablations/run_ablations.py` sweeps `prefilter_k ∈ {200, 500, 1000}` on the 10 visual-required rows. If 720p alone doesn't fix the window gate, widening the prefilter pool may.
+6. **If still 0/10 after both fixes:** the failure is at the model level. ColQwen's cosine-on-pooled-vector doesn't index slide-text-heavy frames well in this corpus. Options: amend ADR 004 to add a second visual candidate (e.g. a CLIP variant fine-tuned on slides), OR pin ColQwen as ornamental and rely on the 4-channel text RRF — which already passes 18/18 on span overlap.
+
+### What this session does NOT establish
+
+- Whether 720p ingest fixes the window-gate failure. Untested. Re-ingest deferred this session because of the memory pressure documented below.
+- Whether `prefilter_k > 200` rescues stage-1 misses. Deferred — script written at `eval/reports/2026-05-28_visual_ablations/run_ablations.py` + `DEFERRED.md` memo.
+- Whether OCR is accurate enough on real slides. Untested in the eval because no frame ever entered the OCR path. Empirically pytesseract + Tesseract 5.x are known to work on 720p slide screenshots; this can be spot-checked in the follow-up session by OCR-ing the curated `.jpg` evidence frames.
+
+## Reproducibility
+
+```bash
+make db-up
+uv run python -m eval.runners.run_visual_eval
+# → visual_eval written: <new run_id> (frame_recall@5=0.056, chunk_tr@5=0.000, answer_grounding@5=0.000 (n_eval=10), n=18)
+
+# Followup (after re-ingest at 720p):
+make db-up
+uv run python -m eval.runners.run_visual_eval
+uv run python eval/reports/2026-05-28_visual_ablations/run_ablations.py
+```
+
+## Memory budget — why this run was constrained
+
+This session is on a 24 GB Mac. ColQwen2.5 loads ~7-8 GB into MPS unified memory per Python process. Running two ColQwen-loading scripts concurrently (eval + diagnostics ablations) exhausted available memory in prior sessions and caused Cursor to crash. The team in this session was redesigned around a single ColQwen load: three teammates handled code-only work (yt-dlp guard fix, ablation script authoring, fast-test verification), and the main context executed exactly one `run_visual_eval`.
+
+DB state at run time:
+
+| video_id | pooled frames | frame_patches |
+|---|---:|---:|
+| nXafozNIk3c | 318 | 98,580 |
+| W_CYk2ogcDI | 113 | 35,030 |
+| aie_sg_2026_d2_arize_alyx | 98 | 30,380 |
+| **total** | **529** | **163,990** |
+
+All frames are 640x360 (h264, ~88 kbps source per ADR 005 v3). The next fix changes this to 720p VP9 at ~178 kbps.
+
+## Gates run
+
+```
+make validate-evals-strict     OK: 1 corpus dir, 0 warnings, strict=True; SELF-TEST OK: 5 valid + 15 invalid
+make phase0-gate               OK: 29 verified non-negative examples across 3 distinct talks (>= 10/2)
+make test                      142 passed, 201 deselected, 1.57s
+make lint                      All checks passed!
+pytest -m slow eval/tests/test_run_visual_eval.py    2 passed in 859.23s (0:14:19)
+```
+
+All five gates green. The slow test was the second (and final) ColQwen load of the session — sequenced after the headline eval run rather than concurrent with it, to stay inside the memory budget. The fast suite covers the new metric primitives + aggregator + injected-OCR paths (47/47 tests in `test_measure_visual.py` pass, including the headline regression that distinguishes a prose-only frame from a code-bearing frame for the same gold span).
+
+## OCR sanity is open
+
+`pytesseract>=0.3.13` is pinned in `pyproject.toml` and Tesseract 5.x is installed on this machine (`/opt/homebrew/bin/tesseract`). The new test cases in `test_measure_visual.py` exercise the metric primitives with a MOCKED `ocr_fn` (test fixtures return canned strings); they prove the substring + window-gate logic is correct, NOT that real Tesseract output on real slide PNGs matches what the curator's `visual_evidence` terms expect.
+
+Real-slide OCR sanity remains open in this report — no frame ever reached the OCR path during the headline run because the window gate failed 10/10 upstream. A cheap follow-up before claiming any positive `VisualAnswerGrounding` result: spot-test `pytesseract.image_to_string(...)` on the 18 curated `.jpg` evidence frames under `eval/curation/visual_gold_review/2026-05-27/<video_id>/` and confirm each `required_any` term is at least findable on its corresponding frame.
+
+## OCR audit payload — REQUIRED before relying on any positive result
+
+The current runner writes only the boolean `visual_answer_grounding_at_k` per row in `eval_results.metrics`. That is fine while the result is 0/10 and the failure is upstream of OCR, but it is **not** enough to defend a future positive. A `vag = true` row with only a boolean cannot be audited — there is no record of which in-window frame was OCR'd, what text was returned, or which `required_any` term matched.
+
+Before the next session interprets any positive `VisualAnswerGrounding` result, the runner must record a structured audit payload per row. Minimum fields (also documented in `integrity_check.md` §B):
+
+- `passed: bool`
+- `evaluated_frame_ids: [int]` — the in-window top-k frame IDs OCR was run against
+- `evaluated_image_paths: [str]`
+- `ocr_excerpts: {frame_id: str}` — first ~500 chars of OCR per evaluated frame
+- `matched_term: str | null`
+- `failure_reason: "no_in_window_frame" | "ocr_no_terms_matched" | "row_not_evaluable" | null`
+
+A `TODO(v4)` marker is in `eval/runners/measure_visual.py` and `eval/runners/run_visual_eval.py` flagging the same gap. The 0/10 result in this report does not depend on the payload; any positive result from a future run does.
+
+## File map
+
+```
+eval/reports/2026-05-28_visual_eval_v3/
+  methodology.mdx     — this file
+  summary.json        — full dump of eval_runs.summary for visual-eval-239f681cbf69
+  per_example.jsonl   — 18 rows, one per visual_gold example (including top_k_frames + top_k_chunks)
+  integrity_check.md  — agent-d's 8-section checklist from prior session
+
+eval/reports/2026-05-28_visual_ablations/
+  run_ablations.py    — prefilter_k sweep + MaxSim demotion deep-dive (NOT executed; deferred)
+  DEFERRED.md         — why deferred + exact resumption commands
+
+scripts/fetch_video.py + docs/decisions/005-chapter-slice-ingest.md
+  — yt-dlp 720p guard + ADR v3 changelog landed by agent-fixer this session
+
+eval/runners/measure_visual.py + eval/runners/run_visual_eval.py + eval/tests/test_measure_visual.py
+  — VisualAnswerGrounding@k primitives, aggregator, runner integration, tests (Agent A's code from prior session, verified by agent-verifier this session)
+```
+
+## Recommendation
+
+**Keep fixing visual** — but do the work in a single, deliberate next session, not piecemeal. The next session should:
+
+1. Operator bumps yt-dlp to >= 2026.3.17.
+2. Re-fetch + re-ingest the 3 talks at 720p (~30 min Mac MPS).
+3. Re-run `run_visual_eval` for fresh `VisualAnswerGrounding@5` numbers.
+4. Run `run_ablations.py` for the `prefilter_k` sweep.
+5. Decide based on those numbers: if any visual-required row passes, ColQwen is salvageable on this corpus. If still 0/10, the methodology MDX above already names the candidate-set amendment options (ADR 004).
+
+Do NOT start Bakeoff #2 (generator + judge) until the visual-grounding question is resolved one way or the other. The eval-as-product claim depends on visual retrieval either working or being honestly retired.
