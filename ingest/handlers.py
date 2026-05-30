@@ -24,9 +24,11 @@ the retrieve-time visual channel).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import psycopg
 
 from chunking import get_chunker
@@ -189,7 +191,33 @@ def embed_frames_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> N
             f"encode_image_patches returned batch size {batch.shape[0]} for single image"
         )
     patches = batch[0]  # (P, POOLED_DIM)
+
+    # Defensive: ColQwen 2.5 occasionally emits NaN/inf patches on
+    # specific 720p inputs (numerical instability path observed on
+    # 2026-05-28 720p re-ingest — at least one frame in nXafozNIk3c
+    # produced NaN rows that pgvector rejects with DataException). Skip
+    # the frame cleanly so the queue can drain. Clear any vectors a
+    # previous good embedding left on the row so the skip is honest: the
+    # frame is genuinely absent from retrieval (NULL pooled_embedding is
+    # omitted by the partial HNSW index), not silently serving a stale
+    # vector that would rank-noise the index.
+    if not np.isfinite(patches).all():
+        sys.stderr.write(
+            f"WARN: NaN/inf in ColQwen patches for frame_id={frame_id} "
+            f"video_id={video_id!r} image_path={on_disk}; skipping (cleared stale rows).\n"
+        )
+        frames_repo.clear_embeddings(conn, frame_id)
+        return
+
     pooled = colqwen.pool_patches(patches)
+
+    if not np.isfinite(pooled).all():
+        sys.stderr.write(
+            f"WARN: NaN/inf in pooled vector for frame_id={frame_id} "
+            f"video_id={video_id!r}; skipping (cleared stale rows).\n"
+        )
+        frames_repo.clear_embeddings(conn, frame_id)
+        return
 
     frames_repo.update_pooled(conn, frame_id, pooled)
     frames_repo.replace_patches(conn, frame_id, patches)

@@ -391,11 +391,7 @@ def _stub_patches_3d(p: int = 4, dim: int = 128):
     """Return a deterministic (1, p, dim) array — emulates
     encode_image_patches([img]) without loading ColQwen."""
     return np.stack(
-        [
-            np.stack(
-                [np.full((dim,), 0.1 + i * 0.01, dtype=np.float32) for i in range(p)]
-            )
-        ]
+        [np.stack([np.full((dim,), 0.1 + i * 0.01, dtype=np.float32) for i in range(p)])]
     )
 
 
@@ -502,3 +498,99 @@ def test_embed_frames_handler_raises_on_missing_image_file(monkeypatch, tmp_path
             conn=None,
             payload={"video_id": "vid-e", "step": "embed_frames", "entity_id": 1},
         )
+
+
+def _wire_embed_frames_image(monkeypatch, tmp_path, *, frame_id=88):
+    """Shared setup for the NaN/inf skip tests: a real-enough PNG path, a
+    capture-only PIL.Image.open, and frame_id resolution. Returns nothing —
+    callers monkeypatch encode_image_patches / pool_patches themselves."""
+    img_path = tmp_path / "f.png"
+    img_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+    monkeypatch.setattr(
+        h.frames_repo,
+        "get",
+        lambda conn, frame_id, video_id: (str(img_path), 10.0),
+    )
+    from PIL import Image
+
+    monkeypatch.setattr(Image, "open", lambda path: _FakeImage())
+
+
+def _capture_writes(monkeypatch):
+    """Record calls to the three frames_repo write paths the skip must guard.
+    Returns (clear_calls, update_calls, replace_calls)."""
+    clear_calls: list = []
+    update_calls: list = []
+    replace_calls: list = []
+    monkeypatch.setattr(h.frames_repo, "clear_embeddings", lambda c, fid: clear_calls.append(fid))
+    monkeypatch.setattr(
+        h.frames_repo, "update_pooled", lambda c, fid, vec: update_calls.append(fid)
+    )
+    monkeypatch.setattr(
+        h.frames_repo, "replace_patches", lambda c, fid, p: replace_calls.append(fid)
+    )
+    return clear_calls, update_calls, replace_calls
+
+
+def test_embed_frames_handler_nonfinite_patches_clear_and_skip(monkeypatch, tmp_path):
+    """A re-embed that yields NaN/inf patches must NOT write pooled/patches,
+    and must clear any stale vectors a prior good embedding left on the row.
+    Otherwise the frame keeps serving a stale pooled vector while the report
+    claims it carries none."""
+    _wire_embed_frames_image(monkeypatch, tmp_path)
+    nan_patches = np.full((1, 4, 128), np.nan, dtype=np.float32)
+    monkeypatch.setattr(h.colqwen, "encode_image_patches", lambda imgs: nan_patches)
+
+    pool_called: list = []
+    monkeypatch.setattr(h.colqwen, "pool_patches", lambda a: pool_called.append(a))
+
+    clear_calls, update_calls, replace_calls = _capture_writes(monkeypatch)
+
+    h.embed_frames_handler(
+        conn=None,
+        payload={"video_id": "vid-e", "step": "embed_frames", "entity_id": 88},
+    )
+
+    assert clear_calls == [88]  # stale rows cleared
+    assert update_calls == [] and replace_calls == []  # no new rows written
+    assert pool_called == []  # short-circuits before pooling
+
+
+def test_embed_frames_handler_nonfinite_pooled_clear_and_skip(monkeypatch, tmp_path):
+    """Patches are finite but the pooled vector comes out non-finite — same
+    contract: clear stale rows, write nothing new."""
+    _wire_embed_frames_image(monkeypatch, tmp_path)
+    finite_patches = _stub_patches_3d(p=4)
+    monkeypatch.setattr(h.colqwen, "encode_image_patches", lambda imgs: finite_patches)
+    monkeypatch.setattr(
+        h.colqwen, "pool_patches", lambda a: np.full((128,), np.inf, dtype=np.float32)
+    )
+
+    clear_calls, update_calls, replace_calls = _capture_writes(monkeypatch)
+
+    h.embed_frames_handler(
+        conn=None,
+        payload={"video_id": "vid-e", "step": "embed_frames", "entity_id": 88},
+    )
+
+    assert clear_calls == [88]
+    assert update_calls == [] and replace_calls == []
+
+
+def test_embed_frames_handler_finite_path_does_not_clear(monkeypatch, tmp_path):
+    """The happy path must not call clear_embeddings — it writes fresh rows
+    via update_pooled + replace_patches, which already overwrite cleanly."""
+    _wire_embed_frames_image(monkeypatch, tmp_path)
+    finite_patches = _stub_patches_3d(p=4)
+    monkeypatch.setattr(h.colqwen, "encode_image_patches", lambda imgs: finite_patches)
+    monkeypatch.setattr(h.colqwen, "pool_patches", lambda a: a.mean(axis=0).astype(np.float32))
+
+    clear_calls, update_calls, replace_calls = _capture_writes(monkeypatch)
+
+    h.embed_frames_handler(
+        conn=None,
+        payload={"video_id": "vid-e", "step": "embed_frames", "entity_id": 88},
+    )
+
+    assert clear_calls == []
+    assert update_calls == [88] and replace_calls == [88]

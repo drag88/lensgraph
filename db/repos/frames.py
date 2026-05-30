@@ -90,14 +90,28 @@ def update_pooled(
     before calling.
     """
     if embedding.ndim != 1 or embedding.shape[0] != POOLED_DIM:
-        raise ValueError(
-            f"update_pooled expects ({POOLED_DIM},); got shape {embedding.shape}"
-        )
+        raise ValueError(f"update_pooled expects ({POOLED_DIM},); got shape {embedding.shape}")
     _ensure_registered(conn)
     conn.execute(
         "UPDATE frames SET pooled_embedding = %s WHERE frame_id = %s",
         (embedding, frame_id),
     )
+
+
+def clear_embeddings(conn: psycopg.Connection, frame_id: int) -> None:
+    """Drop any ColQwen-derived vectors for a frame: NULL ``pooled_embedding``
+    and DELETE its ``frame_patches`` rows.
+
+    Used by ``embed_frames_handler`` when a re-embed yields NaN/inf patches
+    or pooled vector: the handler skips writing new rows, but a previous good
+    embedding may still be on the row. Leaving it would make the frame keep
+    serving a stale pooled vector from the HNSW prefilter while the report
+    claims the frame carries no embedding. Clearing makes the skip honest —
+    the frame is genuinely absent from retrieval (partial HNSW index from
+    migration 0003 omits NULL pooled rows). A missing frame_id is a no-op.
+    """
+    conn.execute("UPDATE frames SET pooled_embedding = NULL WHERE frame_id = %s", (frame_id,))
+    conn.execute("DELETE FROM frame_patches WHERE frame_id = %s", (frame_id,))
 
 
 def replace_patches(
@@ -121,9 +135,7 @@ def replace_patches(
     every re-run.
     """
     if patches.ndim != 2 or patches.shape[1] != POOLED_DIM:
-        raise ValueError(
-            f"replace_patches expects (P, {POOLED_DIM}); got shape {patches.shape}"
-        )
+        raise ValueError(f"replace_patches expects (P, {POOLED_DIM}); got shape {patches.shape}")
     if patches.shape[0] < 1:
         raise ValueError(
             "replace_patches requires at least 1 patch row; "
