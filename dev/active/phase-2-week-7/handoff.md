@@ -1,93 +1,117 @@
-# Handoff — Phase 2 Week 7 (visual eval v3)
+# Handoff — Phase 2 Week 7 (visual eval v4 — 720p + ablation)
 
-Opened: 2026-05-28
-Status: visual eval v3 shipped. Frame-side answer-grounding metric (`VisualAnswerGrounding@k`) now live and validated. The metric returns 0/10 on the visual-required slice: ColQwen2.5 does not surface answer-bearing frames on the current 360p ingest. **This is a defensible failure with a named next fix** — re-ingest at 720p (yt-dlp fix landed this session; operator action needed to bump the binary).
-Prior handoff: `dev/active/phase-2-week-6/handoff.md` (CLOSED at `7c84cff`).
-Memory-safety note: this session used a single-ColQwen-load team design to avoid the Cursor crashes that happened in two prior sessions.
+Opened: 2026-05-28 (visual eval v3 closed earlier today at HEAD 1767704)
+Status: visual eval v4 shipped. 720p re-ingest done. Prefilter ablation done. The blocker is now isolated: **ColQwen2.5 MaxSim**, not prefilter, not OCR, not source resolution.
+Prior handoff state: visual eval v3 stack accepted by Codex review at HEAD 1767704.
 
 ## What is true now
 
-1. `eval/runners/measure_visual.py` carries the new frame-side metric `VisualAnswerGrounding@k`. The primitive `frame_ocr_matches_at_k` and the aggregator `visual_answer_grounding_at_k` are exported. `frame_ocr_text` uses `pytesseract` (Tesseract 5.x, PSM 3, eng) and is LRU-cached at 4096 entries.
-2. `eval/runners/run_visual_eval.py` loads `visual_evidence` from `visual_gold.jsonl` and writes the new metric into `eval_runs.summary` + `eval_results.metrics`.
-3. `eval/tests/test_measure_visual.py` has 47 fast tests passing (9 new OCR-related, including the prose-vs-code regression).
-4. `scripts/fetch_video.py` now enforces `MIN_HEIGHT_PX = 480` via post-fetch `ffprobe` so a silent 360p SABR fallback fails loudly. `eval/tests/test_fetch_video.py` has 2 new tests covering the guard (skip cleanly if `ffmpeg` is absent).
-5. `docs/decisions/005-chapter-slice-ingest.md` v3 changelog entry explains the 360p root cause (`yt-dlp 2026.03.03` SABR throttling) and pins `yt-dlp >= 2026.3.17` as the operator floor.
-6. `eval/reports/2026-05-28_visual_ablations/run_ablations.py` is written (722 LOC) but NOT executed. `DEFERRED.md` documents the resumption path.
-7. Run `visual-eval-239f681cbf69` landed: `VisualFrameRecall@5=0.056` (1/18), `VisualChunkTR@5=0.000` (0/18), `AnswerTermHit@5=0.000` (0/10), `VisualAnswerGrounding@5=0.000` (0/10), `lift_chunk_tr_pp=-5.56`, `lift_answer_term_pp=0.0`.
+1. yt-dlp bumped to `2026.03.17` (operator-side). `MIN_HEIGHT_PX = 480` guard in `scripts/fetch_video.py` passed.
+2. Three talks re-fetched at 1280×720; 360p originals preserved at `videos/ai_engineering_v0/.360p_backup/`.
+3. Frames re-extracted at 1280×720; PNG dimensions verified on disk.
+4. 514 of 529 frames carry `pooled_embedding`. 15 frames hit a new ColQwen NaN/inf path on AV1-source 720p inputs (12 in `nXafozNIk3c`, 3 in `W_CYk2ogcDI`). Defensive skip added to `ingest/handlers.embed_frames_handler` (uncommitted) — bad frames carry NULL pooled_embedding so HNSW retrieval omits them.
+5. Patches: 375,734 total (was 163,990 at 360p); ~730/frame at 720p vs ~310/frame at 360p — 2.3× the patch count.
+6. visual_eval re-run: `visual-eval-0acd933a1c18`. `VisualFrameRecall@5 = 0.056`, `VisualChunkTR@5 = 0.056`, `AnswerTermHit@5 = 0.000`, `VisualAnswerGrounding@5 = 0.000` (n_eval=10). `lift_chunk_tr_pp = 0.0` (was -5.56 at v3). `lift_answer_term_pp = 0.0`.
+7. Ablation `prefilter_k ∈ {200, 500, 1000}` executed against the 720p substrate. At K=200, 7 of 10 visual-required rows fail at stage 1 (gold frame absent from prefilter). At K=500, **10 of 10 frames reach the prefilter**. But MaxSim then ranks the gold-overlapping chunk at positions 60-172 of ~210 chunks across all K values. Pass@5 stays 0/10 in every condition.
 
-## Headline finding
+## Headline numbers — before/after table
 
-ColQwen2.5 does not surface a frame within the gold window for ANY of the 10 visual-required rows. The window gate fails 10/10. OCR is never reached. Adding the visual channel to the 4-channel text RRF makes span-overlap slightly worse (-5.56 pp, one example regresses; the rest match). This matches the prior diagnostic's 5/10 stage-1 misses + 4/10 stage-3 demotions.
+| Metric | 360p (v3) | 720p (v4) | Δ |
+|---|---:|---:|---:|
+| `VisualFrameRecall@5` (n=18) | 0.056 | 0.056 | 0 |
+| `VisualChunkTR@5` (n=18) | 0.000 | 0.056 | +1 |
+| `AnswerTermHit@5` (n_eval=10) | 0.000 | 0.000 | 0 |
+| `VisualAnswerGrounding@5` (n_eval=10) | 0.000 | 0.000 | 0 |
+| `lift_chunk_tr_pp` | -5.56 | 0.0 | +5.56 |
+| `lift_answer_term_pp` | 0.0 | 0.0 | 0 |
+
+Plus the ablation outcome: prefilter widening fully rescues stage 1 but pass@5 stays 0/10. **The remaining blocker is MaxSim.**
+
+## Per-example failure attribution — visual-required slice
+
+All 10 rows now categorised `ii_maxsim_demote` per `eval/reports/2026-05-28_visual_ablations/report.md`:
+
+- 7 rows fail prefilter at K=200; all 10 rescued at K=500.
+- All 10 rows: MaxSim demotes gold chunk to rank 60-172 (of ~210 chunks) regardless of K.
+- Gaps from gold MaxSim score to top-5 cutoff are small (~+1.0 to +2.5 units), but the top-5 chunks are consistently from unrelated time windows in the same talk (e.g. "buy more H100s" instead of resumability config code). MaxSim prefers whole-frame visual similarity over slide-text relevance.
 
 ## Recommendation
 
-Keep fixing visual. Operator action needed first:
+**Try a different aggregator on ColQwen patches before swapping models.** Specifically:
 
-1. Bump yt-dlp to >= 2026.3.17 (`uv tool install yt-dlp@2026.3.17` or equivalent).
-2. Re-fetch the 3 talks at 720p.
-3. Re-ingest frames + ColQwen patches (~30 min Mac MPS).
-4. Re-run `uv run python -m eval.runners.run_visual_eval`.
-5. Run `uv run python eval/reports/2026-05-28_visual_ablations/run_ablations.py` for the `prefilter_k ∈ {200, 500, 1000}` sweep.
-6. If `VisualAnswerGrounding@5` is still 0/10 after both fixes, the failure is at the model level; consider amending ADR 004 to add a second visual candidate.
+1. **Option A — replace MaxSim** in `retrieve/visual.py` with a cross-encoder reranker (`BAAI/bge-reranker-v2-m3`, already in the bakeoff #1 stack) over the top-100 K=500 prefilter candidates. Code-only change; no new model selection or budget.
+2. **Option B — add a second visual candidate** in `eval/config/model_candidates.yaml` (e.g. ColPali v1.3 with PaliGemma backbone, or a CLIP-slide variant) and amend ADR 004. Larger lift.
+3. **Option C — retire visual retrieval as ornamental.** The 4-channel text RRF passes 18/18 on span overlap. If A and B both fail, this is the honest answer; the v4 report names it.
 
-Do NOT start Bakeoff #2 (generator + judge) until the visual question is resolved.
+Recommended next session: implement A as a `chunking_strategy=' ...'`-equivalent toggle on the visual channel so the change is reversible. Re-run visual_eval. If A doesn't move the metric, evaluate B vs C.
+
+**Do NOT start Bakeoff #2** until visual is resolved.
 
 ## Commands run this session
 
 ```
-make db-up && make db-migrate          # OK, volume pgdata
-make validate-evals-strict             # OK (5 valid + 15 invalid fixtures)
-make phase0-gate                       # OK (29 verified across 3 talks)
-make test                              # 142 passed (was 130; +9 OCR tests, +2 fetch_video tests, +1 measure_visual rebalance)
-make lint                              # clean (after fixer's diff)
+yt-dlp version bump:        2026.03.03 → 2026.03.17
+uv run python -m scripts.fetch_video --corpus ai_engineering_v0 --corpus-all
+                            OK; 3 videos at 1280×720; height guard passed
+uv run python -m ingest.cli (×3 talks)              OK; 529 frame rows enqueued
+uv run python -m scripts.drain_ingest_queue ingest_frames    OK; 529 PNGs at 720p
+uv run python -m scripts.drain_ingest_queue ingest_embed_frames
+                            FIRST RUN: crashed at frame 21/318 (psycopg DataException — NaN in vector)
+                            PATCH: added np.isfinite() guard in embed_frames_handler
+                            SECOND RUN: drained 509 messages in ~28 min, 15 NaN-skips
 uv run python -m eval.runners.run_visual_eval
-                                       # OK → visual-eval-239f681cbf69
-                                       # frame_recall@5=0.056, chunk_tr@5=0.000, answer_grounding@5=0.000 (n_eval=10), n=18
-uv run pytest -m slow eval/tests/test_run_visual_eval.py
-                                       # 2 passed in 859.23s (0:14:19) — the second (and final) ColQwen load this session
+                            OK → visual-eval-0acd933a1c18
+                            frame_recall@5=0.056, chunk_tr@5=0.056,
+                            answer_grounding@5=0.000 (n_eval=10), n=18
+PYTHONPATH=. uv run python eval/reports/2026-05-28_visual_ablations/run_ablations.py
+                            OK → ablation_data.jsonl (30 rows) + report.md
+make validate-evals-strict  OK (5 valid + 15 invalid fixtures)
+make phase0-gate            OK (29 verified / 3 talks)
+make test                   142 passed, 201 deselected
+make lint                   All checks passed
 ```
 
-All five gates green.
+The slow integration test (`pytest -m slow eval/tests/test_run_visual_eval.py`) was not re-run in v4 because the only changes to `eval/runners/` since v3 are TODO comments. The headline `run_visual_eval` execution above doubles as the slow test path.
 
 ## What failed or was not run
 
-- 720p re-ingest. Deferred to the operator + the next session. Agent B's fix is in but the binary bump + ~30 min re-ingest belongs to a deliberate next session.
-- `run_ablations.py`. Deferred for memory reasons — see DEFERRED.md.
-
-## Memory regression — root cause + mitigation
-
-Two prior sessions crashed Cursor by running multiple `uv run python` processes that each loaded ColQwen 2.5 (~7-8 GB on MPS unified memory) on a 24 GB Mac. The processes were independent — no shared model server — so memory consumption was additive. Cursor (Electron renderer) got squeezed when swap usage exceeded ~7 GB.
-
-Mitigation in this session:
-- Only one ColQwen load total — in main context, after agents finished.
-- Three agents did code-only work (yt-dlp guard fix, ablation script authoring, fast-test verification) — none touched ColQwen.
-- Documented in `eval/reports/2026-05-28_visual_eval_v3/methodology.mdx` "Memory budget" section.
-
-For future sessions touching visual retrieval: never run more than one ColQwen-loading process at a time on this hardware. Run them serially or split across sessions.
-
-## Next command
-
-```bash
-git status --short                     # confirm clean stack
-# Then commit in chunks (excluding the .claude/* and CLAUDE.md/AGENTS.md relocation that was pre-existing)
-```
+- `ingest/handlers.py` defensive NaN/inf skip is in the working tree but NOT committed. Lives in v4 ingest scope; commit alongside the v4 report.
+- Real-slide OCR sanity check (spot-test `pytesseract.image_to_string` on the 18 curated `.jpg` evidence frames) — still open. Same status as v3.
+- OCR audit payload upgrade (structured `evaluated_frame_ids` / `ocr_excerpts` / `matched_term` / `failure_reason`). Still required before any future positive `VisualAnswerGrounding` result. TODO(v4) markers in `measure_visual.py:562` and `run_visual_eval.py:127` still apply.
+- Investigation of the ColQwen NaN/inf path on specific 720p inputs. 15 frames skipped. Repro frame: `frames/nXafozNIk3c/frame_000021.png`.
 
 ## Files likely to change next
 
-Commits this session (in order):
+If recommendation **A (different aggregator)**:
+- `retrieve/visual.py` — replace MaxSim refine with bge-reranker-v2-m3 cross-encoder over top-100 K=500.
+- `eval/runners/measure_visual.py` + `eval/runners/run_visual_eval.py` — new metric? No, the existing metrics work; the change is in the retrieval implementation only.
+- `eval/tests/test_run_visual_eval.py` — confirm the slow path still passes.
 
-1. **fetch_video guard + ADR v3** — `scripts/fetch_video.py`, `docs/decisions/005-chapter-slice-ingest.md`, `eval/tests/test_fetch_video.py`.
-2. **VisualAnswerGrounding@k metric** — `eval/runners/measure_visual.py`, `eval/runners/run_visual_eval.py`, `eval/tests/test_measure_visual.py`, `pyproject.toml` (pytesseract pin), `uv.lock`.
-3. **Visual eval v3 report** — `eval/reports/2026-05-28_visual_eval_v3/{methodology.mdx,summary.json,per_example.jsonl,integrity_check.md}`.
-4. **Deferred ablation** — `eval/reports/2026-05-28_visual_ablations/{run_ablations.py,DEFERRED.md}`.
-5. **Handoff** — this file.
+If recommendation **B (second visual candidate)**:
+- `eval/config/model_candidates.yaml` — add the new option.
+- `docs/decisions/004-model-selection.md` — amendment.
 
-Keep OUT of the commit stack (pre-existing relocation): `.claude/CLAUDE.md` deletion, root `CLAUDE.md`, root `AGENTS.md`, `.claude/rules/*`, `.claude/skills/*`, `.cursor/*`, `docs/codebase-explorer.html`, `prompts/*`.
+If recommendation **C (retire visual)**:
+- `eval/runners/measure_visual.py::_rrf_with_visual` — drop the visual channel; 4-ch becomes the production path.
+- ADR 004 amendment + ADR 005 retire note.
+- Methodology MDX claiming "visual was tried and retired" with the v3+v4 reports as evidence.
 
-## Open items
+## Out of this commit stack (intentionally)
 
-- 720p re-ingest path (above).
-- **Real-slide OCR sanity check.** Tesseract 5.x is installed and the new metric primitives have mocked-OCR tests covering the substring + window-gate logic. We have NOT yet run `pytesseract.image_to_string(...)` on a real slide PNG in this corpus. Cheap to run on the 18 curated `.jpg` evidence frames under `eval/curation/visual_gold_review/2026-05-27/<video_id>/` — spot-checks the curator's `visual_evidence.required_any` terms are at least findable. Required before claiming any positive `VisualAnswerGrounding` result.
-- **OCR audit payload (v4).** The runner writes only a bool. Any future positive result needs structured fields (`evaluated_frame_ids`, `ocr_excerpts`, `matched_term`, `failure_reason`). `TODO(v4)` markers are in `measure_visual.py` + `run_visual_eval.py`. Documented in `integrity_check.md` §B. Inert today (0/10 positives) but load-bearing when re-ingest changes the upstream retrieval.
-- Stage-1 prefilter ablation (script written; deferred).
-- Stage-3 MaxSim diagnosis (diagnostic report from prior session names 3 rows where MaxSim ranks gold at 93/94/111 of ~110).
+Same caveat as v3 — these were modified pre-session and stay unstaged:
+- `.claude/CLAUDE.md` deletion + root `CLAUDE.md` / `AGENTS.md`
+- `.claude/rules/*`, `.claude/skills/*`, `.cursor/*`, `.cursorignore`, `.cursorindexingignore`, `.vscode/settings.json`
+- `prompts/*`, `docs/codebase-explorer.html`
+- formatter churn under `generate/`, `eval/runners/providers.py`, embeddings scripts, unrelated tests
+
+## Stop-condition met
+
+The v4 stop condition was: "**Either** `VisualAnswerGrounding@5` improves after 720p + ablation, **or** produce a defensible report showing whether the remaining blocker is prefilter, MaxSim, OCR, or ColQwen itself."
+
+`VisualAnswerGrounding@5` did not improve (still 0/10). The defensible failure report (this file + `eval/reports/2026-05-28_visual_eval_v4/methodology.mdx` + `eval/reports/2026-05-28_visual_ablations/report.md`) shows **the remaining blocker is MaxSim**, with per-example data:
+
+- prefilter loses on 7 of 10 at K=200; rescues all 10 at K=500.
+- MaxSim ranks gold at 60-172 of ~210 across all K values.
+- Top-5 chunks are from unrelated time windows in the same talk.
+
+That meets the second branch of the stop condition.
