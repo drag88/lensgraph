@@ -1,5 +1,18 @@
 # Handoff — Phase 2 Week 8
 
+> **UPDATE 2026-05-30 — visual blocker resolved.** The week-8 diagnosis (pooling /
+> MaxSim) was wrong: the visual channel was broken by a ColQwen load bug — three
+> rename-orphaned weights (LoRA adapter, `embed_tokens`, final `norm`) left at
+> their init under `transformers 5.9.0`. Fixed in `embed/colqwen.py`
+> (`eval/reports/2026-05-30_visual_rerank_probe/loader_fix.mdx`). Frames were
+> re-ingested with the corrected loader via the native `ingest_embed_frames` queue,
+> and the visual eval was re-run: **VisualFrameRecall@5 1/18 → 17/18, VisualChunkTR@5
+> 1/18 → 18/18** (`eval/reports/2026-05-30_visual_eval_fixed_loader/`, run
+> `visual-eval-f90e31495c89`). VAG = 2/10 is recorded but NOT a claim — the audit
+> payload (`dev/active/phase-2-week-8/audit_payload_design.md`) is still
+> unimplemented. Deferred: the VAG audit payload, more talks before lift/ablation,
+> Phase B reranker, bakeoff #2. Read the two reports above for current state.
+
 Opened: 2026-05-28. Refreshed: 2026-05-29 (review + research session close).
 Status: v4 reviewed and committed with Codex fixes; research matrix shipped; next
 experiment scoped in `prompts/prompt49.md`. Not implemented this session.

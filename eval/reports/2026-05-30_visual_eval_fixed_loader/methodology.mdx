@@ -1,0 +1,106 @@
+# Visual eval — fixed ColQwen loader (re-ingested substrate)
+
+Date: 2026-05-30. Run id: `visual-eval-f90e31495c89`. Candidate: `colqwen2.5`
+(`vidore/colqwen2.5-v0.2`). `model_candidates.yaml` sha256
+`f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1`. k = 5.
+
+This is the visual-retrieval headline re-run after re-ingesting every frame with
+the corrected ColQwen loader. It supersedes the 2026-05-28 v4 run, which was
+produced by a silently-broken encoder.
+
+## What changed since v4
+
+The v4 substrate was embedded by a ColQwen load with three rename-orphaned weights
+(LoRA adapter, `embed_tokens`, final `norm`), so frame and query embeddings lived
+in unrelated spaces — visual retrieval was noise. The fix is in
+`embed/colqwen.py::_load_adapted_colqwen` (remap the adapter keys + load the two
+orphaned text weights from the checkpoint, behind a load-integrity gate). See
+`eval/reports/2026-05-30_visual_rerank_probe/loader_fix.mdx` for the full root
+cause and the offline determinism proof (same query → cosine 1.0 across two fresh
+processes; zero missing/unexpected LoRA keys).
+
+Every frame's `pooled_embedding` + `frame_patches` were then re-encoded with the
+corrected loader via the native ingest path (`ingest_embed_frames` queue →
+`embed_frames_handler`, NaN/inf clear-on-skip from `66c7554` intact). No frame
+rows or image paths changed; no video was re-fetched or re-sampled.
+
+## Substrate (after re-ingest)
+
+| video_id | pooled frames | frame_patches |
+|---|---|---|
+| `nXafozNIk3c` | 306 | 223,686 |
+| `W_CYk2ogcDI` | 110 | 80,410 |
+| `aie_sg_2026_d2_arize_alyx` | 98 | 71,638 |
+| **total** | **514 / 529** | **375,734** |
+
+15 frames carry no embedding — they hit the ColQwen NaN/inf path and were
+clear-on-skipped (12 `nXafozNIk3c`, 3 `W_CYk2ogcDI`). This is the same set as
+before; the NaN is input-specific, not loader-dependent. 514 × 731 patches =
+375,734.
+
+## Results vs v4
+
+n = 18 visual_gold single_clip rows (10 `visual-required` + 8 text-saturated).
+The four metrics are the module's existing ones; nothing was re-tuned.
+
+| metric | v4 (broken loader) | fixed loader | notes |
+|---|---|---|---|
+| `VisualFrameRecall@5` | 1/18 (0.056) | **17/18 (0.944)** | only `visual-sally-large-json-composable-tools` misses |
+| `VisualChunkTR@5` | 1/18 (0.056) | **18/18 (1.000)** | every gold chunk overlaps a top-5 visual chunk |
+| `AnswerTermHit@5` (text side) | 0/10 | 0/10 | slide text is not in the transcript — expected |
+| `VisualAnswerGrounding@5` (frame OCR) | 0/10 | 2/10 | see caveat below — not a methodology claim |
+
+The week-8 "prefilter recall problem" and "MaxSim floor" do not survive a correct
+encoder: frame recall jumps from 1/18 to 17/18, chunk TR from 1/18 to 18/18.
+
+## VisualAnswerGrounding: positives are NOT yet a claim
+
+Two rows scored a positive `VisualAnswerGrounding@5`
+(`visual-required-sally-current-plan-block`,
+`visual-required-sally-lessons-recoverable-exceptions`): a top-5 visual frame in
+the gold window OCR'd to text containing the curator's required terms.
+
+**These positives are recorded but must not be used as a grounding claim.** The
+structured audit payload designed in
+`dev/active/phase-2-week-8/audit_payload_design.md`
+(`metrics.visual_answer_grounding` JSONB: `evaluated_frame_ids`,
+`evaluated_image_paths`, `ocr_excerpts`, `matched_term`, `failure_reason`) is
+still not implemented — `eval_results.metrics.visual_answer_grounding_at_k` is a
+bare boolean. Per the v3 integrity check (§B), a positive VAG row is only
+defensible once that payload records which frame, which OCR text, and which term
+matched. Until it lands, treat VAG = 2/10 as a smoke signal that the OCR path runs
+end-to-end on a correct substrate, not as evidence that the visual channel grounds
+answers.
+
+(Separately, the OCR path had to be repaired this run: `frame_ocr_text` passed a
+PIL Image to pytesseract 5.5.x, which raised `UnicodeDecodeError`; it now passes
+the file path. Without this the eval could not score VAG at all.)
+
+## Lift
+
+`VisualChunkTR@5` is 1.000 with the visual channel AND 1.000 for the 4-channel
+text RRF without it, so `lift_chunk_tr_pp = 0.0` on this set. That is not evidence
+the visual channel is ornamental — it means the 3-talk corpus is small enough that
+the text channels already retrieve every gold chunk, leaving no headroom to
+measure lift. The point of this run is narrower and now met: the visual channel,
+which was returning noise, returns the correct frames and chunks. A fair
+lift/ablation needs more talks (see the experiment-tracking dataset targets).
+
+## Commands
+
+```
+# re-ingest frame embeddings with the corrected loader (native queue path)
+uv run python -m scripts.drain_ingest_queue ingest_embed_frames
+# headline
+uv run python -m eval.runners.run_visual_eval
+```
+
+Files: `summary.json` (the `eval_runs.summary`), `per_example.jsonl` (the
+`eval_results` rows). DB run id `visual-eval-f90e31495c89`.
+
+## Deferred
+
+- The `VisualAnswerGrounding` audit payload + its regression test — required
+  before any VAG positive is a claim.
+- A multi-talk corpus before chunking/lift ablations are meaningful.
+- Phase B (visual reranker) and bakeoff #2 (generator + judge) — out of scope.

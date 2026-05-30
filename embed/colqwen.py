@@ -123,20 +123,34 @@ def _load_adapted_colqwen(adapter_id: str, device: str) -> Any:
     base_id = cfg["base_model_name_or_path"]
     base = ColQwen2_5.from_pretrained(base_id, torch_dtype=dtype, device_map=device).eval()
 
-    # Second half of the same rename bug: the base checkpoint stores the token
-    # embeddings as ``model.embed_tokens.weight`` (old layout) and sets
-    # ``tie_word_embeddings: True``. Under the installed transformers the live
-    # module is ``language_model.embed_tokens`` and the tie logic leaves it at
-    # its random init — so even with the LoRA fixed, every process gets a
-    # different embedding table (the one parameter that differs across loads).
-    # Load the real weights from the checkpoint explicitly.
+    # Second half of the same rename bug. transformers' checkpoint-conversion
+    # mapping remaps the decoder LAYERS (``model.layers.*`` ->
+    # ``language_model.layers.*``), but the two NON-layer text weights are
+    # orphaned by the rename and load at their init, not the checkpoint values:
+    #   * ``model.embed_tokens.weight`` — left RANDOM (``tie_word_embeddings:
+    #     True`` + no lm_head), so every process gets a different table; this is
+    #     the parameter that broke cross-process determinism.
+    #   * ``model.norm.weight`` (final RMSNorm) — left at the RMSNorm default of
+    #     ones, which is deterministic but wrong (the trained weights are far
+    #     from ones), so the embeddings are self-consistent but not the trained
+    #     model's. Materially different: ones vs trained shifts a frame embedding
+    #     by cos ~0.67.
+    # Copy both from the base checkpoint explicitly. Each is required — a missing
+    # weight_map entry means the checkpoint layout changed and the repair must be
+    # revisited, so raise rather than silently leaving a weight at its init.
     base_dir = Path(snapshot_download(base_id))
     weight_map = json.loads((base_dir / "model.safetensors.index.json").read_text())["weight_map"]
-    embed_key = "model.embed_tokens.weight"
-    embed_shard = st.load_file(str(base_dir / weight_map[embed_key]))[embed_key]
-    embed_module = base.get_input_embeddings()
-    with torch.no_grad():
-        embed_module.weight.copy_(embed_shard.to(device=device, dtype=embed_module.weight.dtype))
+    for ckpt_key in ("model.embed_tokens.weight", "model.norm.weight"):
+        if ckpt_key not in weight_map:
+            raise RuntimeError(
+                f"base checkpoint missing {ckpt_key!r}; ColQwen orphan-weight repair "
+                "in embed/colqwen.py must be revisited for this checkpoint layout"
+            )
+        live_path = ckpt_key.replace("model.", "language_model.", 1)
+        live_param = base.get_parameter(live_path)
+        src = st.load_file(str(base_dir / weight_map[ckpt_key]))[ckpt_key]
+        with torch.no_grad():
+            live_param.copy_(src.to(device=device, dtype=live_param.dtype))
 
     # Map each live target module to its layers-suffix so adapter keys can be
     # remapped onto whatever the current transformers calls the text decoder.

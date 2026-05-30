@@ -370,17 +370,21 @@ def frame_ocr_text(image_path: str) -> str:
     the metric is undefined for frames that cannot be OCR'd, so the
     aggregator catches and surfaces them rather than scoring a false
     pass / fail."""
-    # Imports are inline so the rest of the module doesn't pay the
-    # Pillow + pytesseract import cost when callers stick to the
-    # span-overlap or text-side metrics. Tesseract itself is invoked
-    # by pytesseract as a subprocess on each call.
+    # Import is inline so the rest of the module doesn't pay the
+    # pytesseract import cost when callers stick to the span-overlap or
+    # text-side metrics. Tesseract itself is invoked by pytesseract as a
+    # subprocess on each call.
+    #
+    # Pass the PATH, not a PIL Image. pytesseract 5.5.x raises a
+    # UnicodeDecodeError on PIL-Image input on this stack (it mis-reads
+    # Tesseract's stderr when round-tripping the image through a temp
+    # file); handing Tesseract the path lets Leptonica load the PNG
+    # directly, which is also closer to the `tesseract <file>` CLI.
     import pytesseract
-    from PIL import Image
 
-    with Image.open(image_path) as img:
-        return pytesseract.image_to_string(
-            img, lang=_TESSERACT_LANG, config=f"--psm {_TESSERACT_PSM}"
-        )
+    return pytesseract.image_to_string(
+        image_path, lang=_TESSERACT_LANG, config=f"--psm {_TESSERACT_PSM}"
+    )
 
 
 OcrFn = Callable[[str], str]

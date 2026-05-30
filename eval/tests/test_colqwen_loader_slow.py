@@ -91,10 +91,12 @@ def test_adapter_loads_with_zero_missing_or_unexpected_lora_keys():
 
 
 @slow
-def test_token_embeddings_match_base_checkpoint():
-    """The live embedding table must equal the base checkpoint's
-    ``model.embed_tokens.weight``. A random re-init (the tie+rename bug) would
-    not match — this is the guard for the embed_tokens half of the fix."""
+def test_orphaned_text_weights_match_base_checkpoint():
+    """The two rename-orphaned text weights — ``embed_tokens`` (left random) and
+    the final ``norm`` (left at the ones default) — must equal the base
+    checkpoint. embed_tokens guards cross-process determinism; norm guards
+    against a self-consistent-but-untrained encoder (ones vs trained shifts an
+    embedding by cos ~0.67). Both loaded by the orphan-weight repair."""
     import json
 
     import safetensors.torch as st
@@ -108,10 +110,11 @@ def test_token_embeddings_match_base_checkpoint():
 
     base_dir = Path(snapshot_download("vidore/colqwen2.5-base"))
     weight_map = json.loads((base_dir / "model.safetensors.index.json").read_text())["weight_map"]
-    key = "model.embed_tokens.weight"
-    expected = st.load_file(str(base_dir / weight_map[key]))[key]
-    live = model.get_input_embeddings().weight.detach().to("cpu", torch.float32)
-    assert live.shape == expected.shape
-    assert torch.allclose(live, expected.to(torch.float32), atol=1e-3), (
-        "live embed_tokens != base checkpoint — the embed_tokens load regressed"
-    )
+    for ckpt_key in ("model.embed_tokens.weight", "model.norm.weight"):
+        expected = st.load_file(str(base_dir / weight_map[ckpt_key]))[ckpt_key]
+        live_path = ckpt_key.replace("model.", "language_model.", 1)
+        live = model.get_parameter(f"base_model.model.{live_path}").detach().to("cpu", torch.float32)
+        assert live.shape == expected.shape, f"{ckpt_key}: shape mismatch"
+        assert torch.allclose(live, expected.to(torch.float32), atol=1e-3), (
+            f"live {live_path} != base checkpoint {ckpt_key} — orphan-weight repair regressed"
+        )

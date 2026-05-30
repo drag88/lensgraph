@@ -1,0 +1,151 @@
+{
+  "k": 5,
+  "component": "visual_retrieval",
+  "n_examples": 18,
+  "per_example": {
+    "visual-tengyu-library-analogy-slide": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-tengyu-retrieval-accuracy-plot": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-required-sally-current-plan-block": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": true
+    },
+    "visual-sally-large-json-composable-tools": {
+      "chunk_pass": true,
+      "frame_pass": false,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-required-sally-jq-grepjson-queries": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-tengyu-accuracy-plot-axes": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-tengyu-accuracy-plot-models": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-tengyu-matryoshka-quantization-slide": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-required-tengyu-hybrid-search-diagram": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-tengyu-matryoshka-chart-axes": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-google-agent-cli-getting-started-screen": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-sally-planning-tools-states-finish-gate": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-tengyu-query-document-enhancement-slide": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-google-adk2-resume-stopped-agents-screen": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": null,
+      "visual_answer_grounding": null
+    },
+    "visual-required-google-adk-resumability-config-code": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-google-agents-cli-seven-skills-list": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-google-adk-resume-version-and-caveat": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-sally-lessons-recoverable-exceptions": {
+      "chunk_pass": true,
+      "frame_pass": true,
+      "answer_term_hit": false,
+      "visual_answer_grounding": true
+    }
+  },
+  "visual_lift": {
+    "lift_pp": 0.0,
+    "lift_chunk_tr_pp": 0.0,
+    "lift_answer_term_pp": 0.0,
+    "with_visual_pass_rate": 1.0,
+    "answer_term_n_evaluable": 10,
+    "without_visual_pass_rate": 1.0,
+    "answer_term_with_visual_rate": 0.0,
+    "answer_term_without_visual_rate": 0.0
+  },
+  "candidate_id": "colqwen2.5",
+  "measurement_mode": "real_visual_gold_sweep",
+  "frame_tolerance_sec": 10.0,
+  "substrate_per_video": {
+    "W_CYk2ogcDI": {
+      "patches": 80410,
+      "pooled_frames": 110
+    },
+    "nXafozNIk3c": {
+      "patches": 223686,
+      "pooled_frames": 306
+    },
+    "aie_sg_2026_d2_arize_alyx": {
+      "patches": 71638,
+      "pooled_frames": 98
+    }
+  },
+  "answer_term_hit_at_k": 0.0,
+  "visual_chunk_tr_at_k": 1.0,
+  "visual_frame_recall_at_k": 0.9444444444444444,
+  "answer_term_hit_n_skipped": 8,
+  "candidate_set_yaml_sha256": "f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1",
+  "answer_term_hit_n_evaluable": 10,
+  "visual_answer_grounding_at_k": 0.2,
+  "visual_answer_grounding_n_skipped": 8,
+  "visual_answer_grounding_n_evaluable": 10
+}

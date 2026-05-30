@@ -1,9 +1,18 @@
 # ColQwen2.5 loader fix — resolution of the visual-retrieval blocker
 
 Date: 2026-05-30. Follow-up to `methodology.mdx` (the diagnosis). This report
-records the fix and the offline proof. **No frames were re-ingested and no DB rows
-were written** — the stored `frames`/`frame_patches` are still from the broken
-encoder and remain stale until a separately-approved re-ingest.
+records the loader fix and its offline proof.
+
+> **UPDATE (same day): the root cause was three orphaned weights, not two, and the
+> frames have since been re-ingested.** A third rename-orphan —
+> `language_model.norm.weight`, the final RMSNorm, left at the ones default rather
+> than the trained checkpoint value — was found and fixed after this report's first
+> draft (it shifts a frame embedding by cos ~0.67, so the encoder was
+> self-consistent but not the trained model). The corrected loader was then used to
+> re-ingest `frames.pooled_embedding` + `frame_patches` and re-run the visual eval
+> headline. See `eval/reports/2026-05-30_visual_eval_fixed_loader/methodology.mdx`
+> for the DB-backed results. The "10/10 in-memory" numbers below predate the
+> norm.weight fix and are kept as the original record.
 
 ## Outcome
 
@@ -14,24 +23,31 @@ encoder's noise to **10/10** — the gold frame lands at rank 1 on 8/10 rows and
 rank 2 on the other two. The week-8 "prefilter recall problem" and "MaxSim floor"
 were both artifacts of the broken encoder.
 
-## Two-part root cause
+## Three-part root cause
 
-Both halves come from a transformers key-rename: the Qwen2.5-VL text decoder,
-which the `colqwen2.5-v0.2` checkpoints were saved against as `model.*`, is
+All three come from a transformers key-rename: the Qwen2.5-VL text decoder, which
+the `colqwen2.5-v0.2` checkpoints were saved against as `model.*`, is
 `language_model.*` on the installed stack (`transformers 5.9.0`, `peft 0.19.1`,
-`colpali-engine 0.3.16`, `torch 2.11.0`).
+`colpali-engine 0.3.16`, `torch 2.11.0`). transformers' conversion mapping remaps
+the decoder LAYERS but orphans the LoRA adapter and the two non-layer text weights.
 
 1. **LoRA adapter never applied.** The adapter's saved keys are
    `base_model.model.model.layers.*`. PEFT injects LoRA into the live
    `language_model.layers.*` modules but cannot match the saved `model.layers.*`
    weights onto them, so every LoRA layer stayed at its random init.
-2. **Token embeddings randomly re-initialized (dominant).** The base checkpoint
-   stores the embedding as `model.embed_tokens.weight` with
+2. **Token embeddings randomly re-initialized (dominant nondeterminism).** The
+   base checkpoint stores the embedding as `model.embed_tokens.weight` with
    `tie_word_embeddings: True`. Under the rename the live module is
    `language_model.embed_tokens`, and the tie logic leaves it at its random init.
-   This was the single parameter that differed across process loads (confirmed by
-   hashing all 1332 parameters across two fresh processes — exactly one differed:
-   `language_model.embed_tokens.weight`).
+   This was the single parameter that differed across process loads (hashing all
+   1332 parameters across two fresh processes showed exactly one differing).
+3. **Final RMSNorm left untrained.** `model.norm.weight` is orphaned to
+   `language_model.norm.weight`, which defaults to ones (deterministic but wrong —
+   the trained weights have mean ~3.5, range −0.03…8.1). Found after the first
+   draft of this report. It does not break determinism, so an embed_tokens-only
+   fix passed the determinism + in-memory recall checks while still using an
+   untrained final norm (ones-vs-trained shifts a frame embedding by cos ~0.67).
+   Repaired the same way as embed_tokens.
 
 Because the DB's frame patches were encoded in one process (one random draw) and
 eval queries in another, query↔frame retrieval compared mismatched encoders — the
@@ -42,8 +58,10 @@ near-uniform similarity floor week-8 attributed to MaxSim.
 No fallback to the broken path, no compatibility shim. On load:
 
 1. Load base `vidore/colqwen2.5-base`.
-2. Copy the real `model.embed_tokens.weight` from the base checkpoint into the
-   live input-embedding module.
+2. Copy both orphaned non-layer text weights — `model.embed_tokens.weight` and
+   `model.norm.weight` — from the base checkpoint into the live
+   `language_model.embed_tokens` / `language_model.norm` params (raise if either
+   is absent from the checkpoint, so a layout change fails loudly).
 3. Remap each saved adapter key onto the live module path by matching the
    `layers.<N>.<...>` suffix (and the `custom_text_proj` head), then apply via
    PEFT.
