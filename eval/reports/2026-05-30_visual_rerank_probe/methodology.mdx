@@ -1,0 +1,172 @@
+# Visual rerank probe — 2026-05-30
+
+Status: **Phase A aborted on a root-cause finding that invalidates the week-8
+diagnosis.** Phase B (reranker) not run — it would be invalid on the broken
+encoder this probe uncovered.
+
+## Outcome label
+
+**Blocked, but not where week-8 thought.** The visual-required failure is **not**
+a pooling-recall problem and **not** a MaxSim ranking floor. It is a **broken
+ColQwen model load**: the LoRA adapter is randomly re-initialized on every
+process start, so the query encoder is non-deterministic and does not match the
+encoder that produced the stored frame patches. Every prior visual number
+(prefilter ranks, the MaxSim "uniform floor", `vag=0/10`) is an artifact of this
+bug. Pooling and reranker fixes were premature.
+
+## Five-line read
+
+1. Phase A re-scored the 514 frames under five prefilter signals. The
+   `prod_mean_cosine` baseline did **not** reproduce the committed ablation ranks
+   (6/10 vs 4/10 in prefilter@200), which is impossible if the encoder were
+   stable — the stored frame embeddings are fixed.
+2. Root cause: `embed.colqwen.encode_text_query` is **non-deterministic across
+   processes**. The identical query encoded in two fresh processes gives
+   cosine **0.844** (max abs diff 0.15), not 1.0.
+3. Mechanism (verified on the local stack): `vidore/colqwen2.5-v0.2`'s LoRA
+   adapter keys are `base_model.model.model.layers.*`, while under
+   transformers **5.9.0** the live ColQwen2.5 model exposes its text decoder as
+   `language_model.layers.*`. The two layouts do not match, so PEFT cannot map
+   the adapter → the LoRA layers are "newly initialized" (random) every load.
+   (Which transformers release introduced the `language_model.*` naming was not
+   verified; the claim is only about what the installed 5.9.0 exposes.)
+4. Because the frame patches in the DB were encoded in one process (one random
+   adapter draw) and eval queries use a different draw, query↔frame retrieval is
+   across mismatched encoders. That **is** the near-uniform similarity floor.
+5. Fix is an environment/load repair (not pooling, not a reranker), followed by a
+   frame re-ingest and a re-run of the visual eval. Recommended below.
+
+## What was run
+
+```
+uv run python -m eval.runners.run_visual_rerank_probe --phase a --prefilter-k 500
+```
+
+Phase A loaded ColQwen once to encode the 10 visual-required queries, freed it,
+then ran pure numpy/scipy pooling over the 514 frames' stored patch arrays. Five
+arms, `VisualFrameRecall@k` on the 10-row slice (single run):
+
+| arm | @5 | @10 | @20 | @200 |
+|---|---|---|---|---|
+| `prod_mean_cosine` | 1/10 | 1/10 | 1/10 | 6/10 |
+| `maxsim_full` | 0/10 | 0/10 | 1/10 | 7/10 |
+| `maxsim_hier_pf3` | 1/10 | 1/10 | 1/10 | 8/10 |
+| `maxsim_hier_pf2` | 0/10 | 0/10 | 1/10 | 7/10 |
+| `maxsim_gauss` | 0/10 | 0/10 | 0/10 | 5/10 |
+
+**These numbers are not trustworthy** and must not inform a decision: each arm
+re-scores frames using a query embedding drawn from a random adapter, and a
+re-run would give different counts. They are recorded only to show the harness
+worked and to motivate the determinism check that followed.
+
+## Root-cause evidence
+
+**1. The baseline does not reproduce the committed ablation.** Ranking the 514
+frames by the **stored** `pooled_embedding` (fixed in the DB since ingest)
+against the *current* query encoder gives gold-frame prefilter ranks that differ
+wildly from the committed `ablation_data.jsonl`:
+
+| example | rank now | committed (K=514) |
+|---|---|---|
+| tengyu-accuracy-plot-models | 59 | 245 |
+| sally-jq-grepjson-queries | 25 | 141 |
+| tengyu-matryoshka-chart-axes | 189 | 258 |
+| sally-current-plan-block | 87 | 162 |
+| google-agents-cli-seven-skills-list | 221 | 400 |
+| tengyu-hybrid-search-diagram | 280 | 197 |
+| google-adk-resumability-config-code | 450 | 444 |
+
+The only changed variable is the query encoder. Stored frame embeddings are
+identical.
+
+**2. The encoder is non-deterministic across processes.** Same query, two fresh
+`uv run python` processes:
+
+```
+max abs diff across processes: 1.5090e-01
+cosine: 0.844111
+```
+
+Within a single process it is deterministic (3 encodes, diff 0.0). Deterministic
+within a process + different across processes = **unseeded random weights chosen
+at load time**.
+
+**3. The random weights are the LoRA adapter.** The model load report prints:
+
+```
+model.layers.{0..35}.self_attn.q_proj.lora_A.default.weight          | UNEXPECTED
+language_model.layers.{0..35}.self_attn.q_proj.lora_A.default.weight | MISSING (newly initialized)
+```
+
+Adapter checkpoint keys (`vidore/colqwen2.5-v0.2/adapter_model.safetensors`) are
+`base_model.model.model.layers.*`. The live model (transformers 5.9.0) names its
+text decoder `language_model.layers.*`. PEFT cannot map `model.layers.*` onto
+`language_model.layers.*`, drops the adapter weights (UNEXPECTED), and leaves the
+target LoRA layers at their random init (MISSING).
+
+Versions: `transformers 5.9.0`, `peft 0.19.1`, `colpali-engine 0.3.16`
+(declares `transformers<6.0.0,>=5.3.0`), `torch 2.11.0`. On this stack the
+adapter's `model.layers.*` keys are not key-compatible with the live
+`language_model.layers.*` modules; 5.9.0 is inside colpali's allowed range, so
+the incompatibility is with this specific adapter revision, not a violated
+version pin. The exact transformers/colpali/adapter combination that IS
+key-compatible was not verified this session — finding it is step 1 of the fix.
+
+## Why this invalidates the week-8 diagnosis
+
+The week-8 report concluded the failure was "two stacked pipeline pathologies
+(prefilter recall + MaxSim floor), not a model defect" and the research matrix
+recommended a pooling fix + a trained reranker. Both rest on the assumption that
+the stored embeddings and the query embeddings come from the same trained
+encoder. They do not. The "near-uniform MaxSim floor with tiny consistent gaps"
+is exactly what mismatched random-adapter encoders produce: query and frame
+vectors live in unrelated subspaces, so every frame looks about equally
+(ir)relevant. No amount of pooling or reranking over those candidates can fix it,
+because the candidate ordering is noise.
+
+## Recommended fix (next session)
+
+Do **not** swap the visual model and do **not** start a reranker. Fix the load,
+then re-ingest, then re-measure:
+
+1. **Make the encoder deterministic and correctly adapted.** Options, cheapest
+   first:
+   - Pin to a `transformers` version whose Qwen2.5-VL key names match the
+     `colqwen2.5-v0.2` adapter (`model.layers.*`), staying within colpali
+     `0.3.16`'s `>=5.3.0` floor if one exists; otherwise pin colpali + transformers
+     together to a known-compatible pair.
+   - Or use a `colqwen2.5` adapter revision saved against transformers 5.x.
+   - Or remap the adapter keys at load (`model.layers.*` → `language_model.layers.*`,
+     plus the visual-tower and projection-head renames) before PEFT applies them.
+2. **Prove the fix offline first** (hard rule 6 — no DB writes yet): with the
+   fixed loader, assert the same query encodes to cosine ≈ 1.0 across two
+   processes, then re-encode the 10 queries **and** the 514 frames in memory and
+   re-run `VisualFrameRecall@200`. Expect a large jump if this is the whole story.
+3. **Then re-ingest** the frame patches (this is a DB write — `frames.pooled_embedding`
+   + `frame_patches`) and re-run the visual eval headline. Pin the working
+   transformers/colpali pair in `uv.lock` and note it in a decision doc so the
+   adapter mismatch cannot silently return.
+4. Add a **load-integrity regression test**. An in-process "encode twice, assert
+   equal" check is NOT sufficient — this exact bug passes it (the encoder is
+   deterministic within a process; it varies across process loads). The test must
+   catch the real failure with at least one of:
+   - a **cross-process** determinism check — encode a fixed string in two separate
+     interpreter processes and assert the vectors match (cosine ≈ 1.0); or
+   - a **strict load check** asserting the adapter applied with **zero missing and
+     zero unexpected LoRA keys** (fail loudly on any `MISSING`/`UNEXPECTED`),
+   so a future transformers/colpali bump that re-breaks the adapter fails CI
+   instead of silently degrading retrieval.
+
+Only after the encoder is fixed and frames re-ingested do the original pooling /
+reranker questions become answerable. The `run_visual_rerank_probe.py` Phase A
+harness is reusable as-is for that re-measurement.
+
+## What was not done
+
+- Phase B (Qwen3-VL reranker): not run. Reranking candidates drawn from a broken
+  prefilter is meaningless.
+- Audit payload: not needed (no `VisualAnswerGrounding` positive was produced or
+  claimed).
+- No production code, no `retrieve/visual.py`, no schema, no DB write touched.
+- No transformers downgrade or re-ingest attempted this session — that is an
+  environment + DB change the user should sanction (see recommendation).
