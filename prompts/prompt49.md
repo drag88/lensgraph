@@ -147,9 +147,20 @@ Build the offline probe as a new script, e.g.
 `eval/runners/run_visual_rerank_probe.py`, scored against the existing metrics
 (`VisualFrameRecall@k`, `VisualChunkTR@k`, `VisualAnswerGrounding@k`). It reads the
 514 frames' patch arrays and the 10 visual-required rows; it loads at most one model
-and only in Phase B. Use TeamCreate for any independent read-only investigation
-(e.g. confirming the colpali-engine pooler API, scouting the reranker loader), NOT
-for the ML runs themselves, which must be serial.
+and only in Phase B.
+
+**Orchestration: a dynamic workflow is NOT needed for this session — do not spawn
+one.** A workflow's value is parallel fan-out; this work is serial by the memory
+ceiling (Phase A is single-threaded numpy; Phase B loads one ML model and rule 5
+forbids a second concurrent ML process). Keep the probe + metric wiring in main
+context (final edits stay in main context). Use TeamCreate only for small read-only
+investigation (confirming the colpali-engine pooler API, scouting the reranker
+loader) — never for the ML runs, which must be serial. The one exception where light
+parallelism is safe: the optional hosted Qwen2.5-VL judge arm is an API call with no
+local RAM, so it may overlap a local arm; the local ML arms (ColQwen, reranker,
+bge-reranker) never overlap each other. (For contrast: the week-8 research fan-out
+was a legitimate workflow use — 5 independent web researchers; this session has no
+such fan-out.)
 
 ### Phase A — recall fix (no new model)
 
