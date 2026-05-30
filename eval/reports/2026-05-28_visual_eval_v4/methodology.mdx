@@ -1,0 +1,184 @@
+# Visual retrieval eval v4 — 720p re-ingest + prefilter_k ablation
+
+Date: 2026-05-28
+Run ID: `visual-eval-0acd933a1c18` (720p; n=18)
+Component: `visual_retrieval` (ColQwen2.5 via `colpali-engine`)
+Candidate id: `colqwen2.5` (from `eval/config/model_candidates.yaml`)
+Eval code path: `eval_runs.code_path = 'visual_eval'`
+Supersedes (as headline source): `eval/reports/2026-05-28_visual_eval_v3/methodology.mdx`.
+
+## Five-line read
+
+1. yt-dlp bumped to 2026.03.17; 3 talks re-fetched at 1280×720 (was 640×360); `MIN_HEIGHT_PX = 480` guard passed.
+2. Re-ingest produced 514 of 529 frames with `pooled_embedding`; 15 frames dropped on a new ColQwen NaN/inf path observed on AV1-source 720p inputs (`nXafozNIk3c` 12, `W_CYk2ogcDI` 3). A defensive skip in `ingest/handlers.embed_frames_handler` unblocks the drain; the affected frames carry NULL pooled_embedding so retrieval omits them.
+3. `VisualAnswerGrounding@5 = 0/10` on the 720p substrate. `VisualChunkTR@5 = 1/18` (vs 0/18 at 360p). `VisualFrameRecall@5 = 1/18` (unchanged). 720p alone is not sufficient.
+4. **Two stacked failures.** At production `prefilter_k=200` the channel is prefilter-limited: the pooled HNSW misses the gold-window frame on 7 of 10 visual-required rows. Widening to `prefilter_k=500` brings all 10 gold frames into the candidate set — but then MaxSim ranks the gold-overlapping chunk at positions 60-172 of ~210 chunks. Pass@5 stays 0/10 across K ∈ {200, 500, 1000}. So production is still prefilter-limited, and the widened prefilter exposes a MaxSim/reranking failure underneath it.
+5. Top-5 MaxSim chunks come from the same video but transcript-text is unrelated to the question (e.g. "buy more H100s", "looking through your recent publications"). MaxSim is preferring whole-frame visual similarity over slide-text relevance.
+
+## Before / after — substrate
+
+| | 360p (v3) | 720p (v4) |
+|---|---|---|
+| Source MP4 height | 640×360, h264, ~88 kbps | 1280×720, h264 or AV1, 178–270 kbps |
+| Frame PNGs on disk | 640×360 | 1280×720 |
+| Frames per video | 318 / 113 / 98 | 318 / 113 / 98 (unchanged) |
+| Pooled-non-null frames | 318 / 113 / 98 | **306 / 110 / 98** (15 NaN-skips) |
+| Patches per video | 98,580 / 35,030 / 30,380 | **223,686 / 80,410 / 71,638** |
+| Patches per frame (avg) | ~310 | **~730** (2.3× more) |
+| Total patches | 163,990 | **375,734** |
+
+The 15 NaN frames are concentrated in two AV1-sourced talks. The H.264-sourced `aie_sg_2026_d2_arize_alyx` (Arize chapter from `m12vGjfbNlo`) had zero NaN events. This is a real ColQwen2.5 inference-time numerical bug on specific 720p inputs.
+
+## Before / after — headline metrics
+
+| Metric | 360p (v3) | 720p (v4) | Δ |
+|---|---:|---:|---:|
+| `VisualFrameRecall@5` (n=18) | 0.056 | 0.056 | 0 |
+| `VisualChunkTR@5` (n=18) | 0.000 | 0.056 | +1 row |
+| `AnswerTermHit@5` (n_eval=10) | 0.000 | 0.000 | 0 |
+| **`VisualAnswerGrounding@5` (n_eval=10)** | **0.000** | **0.000** | **0** |
+| `lift_chunk_tr_pp` | -5.56 | 0.0 | +5.56 |
+| `lift_answer_term_pp` | 0.0 | 0.0 | 0 |
+
+One row (`visual-required-tengyu-matryoshka-chart-axes`) moved from chunk_tr-fail to chunk_tr-pass. No row passes any answer-grounding metric.
+
+## Per-example pass/fail — visual-required slice (10 rows, 720p)
+
+| Example | frame_pass | chunk_pass | answer_term_hit | visual_answer_grounding |
+|---|:---:|:---:|:---:|:---:|
+| visual-required-sally-current-plan-block | ✗ | ✗ | ✗ | ✗ |
+| visual-required-sally-jq-grepjson-queries | ✗ | ✗ | ✗ | ✗ |
+| visual-required-sally-lessons-recoverable-exceptions | ✗ | ✗ | ✗ | ✗ |
+| visual-required-tengyu-accuracy-plot-axes | ✗ | ✗ | ✗ | ✗ |
+| visual-required-tengyu-accuracy-plot-models | ✗ | ✗ | ✗ | ✗ |
+| visual-required-tengyu-hybrid-search-diagram | ✗ | ✗ | ✗ | ✗ |
+| visual-required-tengyu-matryoshka-chart-axes | ✗ | **✓** | ✗ | ✗ |
+| visual-required-google-adk-resumability-config-code | ✗ | ✗ | ✗ | ✗ |
+| visual-required-google-adk-resume-version-and-caveat | ✗ | ✗ | ✗ | ✗ |
+| visual-required-google-agents-cli-seven-skills-list | ✗ | ✗ | ✗ | ✗ |
+
+All 10 rows fail the window gate in the production pipeline (`prefilter_k=200`). The single chunk_pass on `tengyu-matryoshka-chart-axes` is a span-overlap-only hit through the 5-channel RRF — the visual channel alone retrieves zero frames in the gold window on this row.
+
+## Per-example pass/fail — prefilter_k ablation (10 rows, diagnostic at K=500)
+
+| Example | gold frame in K=500 prefilter (rank) | gold chunk after MaxSim (rank) | pass@5 |
+|---|---:|---:|:---:|
+| visual-required-google-adk-resumability-config-code | 444 / 514 | 164 / 211 | ✗ |
+| visual-required-google-adk-resume-version-and-caveat | 442 / 514 | 159 / 211 | ✗ |
+| visual-required-google-agents-cli-seven-skills-list | 400 / 514 | 144 / 208 | ✗ |
+| visual-required-sally-current-plan-block | 162 / 514 | 83 / 213 | ✗ |
+| visual-required-sally-jq-grepjson-queries | 141 / 514 | 70 / 211 | ✗ |
+| visual-required-sally-lessons-recoverable-exceptions | 136 / 514 | 170 / 213 | ✗ |
+| visual-required-tengyu-accuracy-plot-axes | 238 / 514 | 71 / 209 | ✗ |
+| visual-required-tengyu-accuracy-plot-models | 245 / 514 | 64 / 209 | ✗ |
+| visual-required-tengyu-hybrid-search-diagram | 197 / 514 | 137 / 209 | ✗ |
+| visual-required-tengyu-matryoshka-chart-axes | 258 / 514 | 91 / 209 | ✗ |
+
+Every row at K=500: gold frame **does** make the prefilter (ranked 136-444 of 514), then **MaxSim demotes the gold chunk to rank 60-172**. The chunks that out-rank the gold are from the same video but cover unrelated time windows.
+
+## MaxSim deepdive — why the gold loses
+
+`run_ablations.py` exposes the top-5 chunks MaxSim returned vs the gold for each example. Sample (`adk-resumability-config-code`, gold chunk rank 164/211, MaxSim 28.504, gap to top-5 cutoff `30.223` is **+1.72 MaxSim units**):
+
+| rank | chunk_id | span (sec) | MaxSim | text preview |
+|---|---|---|---|---|
+| 1 | 162 | [2900, 2931] | 30.395 | "but at least understand the core concepts uh at least understand what changes when you change..." |
+| 2 | 161 | [2874, 2906] | 30.347 | "okay I think that's like a very hot topic so a lot of people will be..." |
+| 3 | 138 | [2299, 2331] | 30.302 | "looking through your recent publications on X, which you're doing a great job of..." |
+| 4 | 166 | [3001, 3029] | 30.299 | "anything and everything that you're doing. Just a simple model call will mostly do the thing..." |
+| 5 | 100 | [1349, 1381] | 30.223 | "buy more H100s H2 good advice of course we need more compute. Yeah. Yeah. So..." |
+
+None of the top-5 are topically about resumable agents. They're spread across the full 90-minute panel. The gold chunk (which is the actual ADK docs page) gets demoted because patches of OTHER frames score marginally higher under MaxSim — a uniform-similarity floor across the visual model's outputs.
+
+Same pattern across the other 9 rows; full deepdive at `eval/reports/2026-05-28_visual_ablations/report.md`.
+
+## Stop-condition resolution — defensible failure with the blocker named
+
+**Two stacked blockers: a pooled-prefilter recall miss at production K, and a ColQwen2.5 MaxSim/ranking failure underneath it.** Not OCR, not source resolution.
+
+Evidence:
+- At production `prefilter_k=200`, 7/10 gold frames miss the prefilter entirely — the channel is prefilter-limited before MaxSim even runs.
+- Prefilter rescue at K=500 is complete (10/10 frames reach stage 2) but pass@5 stays 0/10 — so widening prefilter is necessary but not sufficient.
+- MaxSim gaps to top-5 cutoff are small (+1.0 to +2.5 units) AND consistent across K — the model genuinely scores other frames marginally higher.
+- 720p source resolution did not improve grounding even though it should be the highest-quality input ColQwen can consume (the processor band downsamples 720p to ~1034×581 which is still 2.5× the 360p area).
+- OCR was untested in any positive case — no frame ever reached the OCR gate.
+- The text-side 4-channel RRF still passes 18/18 on span overlap. The eval-as-product story does not break; visual retrieval is the part that doesn't currently help.
+
+The fix has two parts: widen the prefilter so gold frames survive stage 1, AND fix ranking over the wider candidate set. Options for the next phase (the week-8 research matrix in `dev/active/phase-2-week-8/research_matrix.md` evaluates these against current models with links/dates):
+
+1. **Widen `prefilter_k` to 500** as the floor for any further work — without it, 7/10 rows cannot pass regardless of the ranking fix. Cheap config change; first move in any experiment.
+2. **Replace MaxSim with a different aggregator OR add a reranker over the candidate chunks.** Options on the existing ColQwen patches: top-K mean instead of sum, IDF-weighted sum, or a reranker. Any reranker must cover **at least the top-200 candidate chunks** (the gold chunks rank 137-172 after MaxSim, so a top-100 rerank would miss them), or rerank the frame candidates before the chunk truncation. `BAAI/bge-reranker-v2-m3` (already in the bakeoff #1 stack) can score over OCR'd frame text. Lowest-cost path; no new model.
+3. **Add a second visual_retrieval candidate** (requires an ADR 004 amendment). Candidates surfaced in the research matrix: a different ColPali-family model, a slide-tuned single-vector embedding model for the prefilter, or a hosted multimodal embedding baseline. Pricing + integration work.
+4. **Hybrid frame→OCR→text-rerank or frame→VLM-judge** over the top-20 candidate frames. Keeps visual retrieval as the candidate generator and adds a text/VLM ranking signal on top.
+
+Do NOT retire visual retrieval and do NOT switch to OCR-only — both were explicitly ruled out for this phase. Recommendation: the smallest reversible diagnostic is option (1) + a slice of (2)/(4) measured side by side; the research matrix names the exact experiment.
+
+## What this report does NOT establish
+
+- Whether real-slide OCR works. Untested for the same reason as v3 — no frame ever reached the OCR gate, even at K=500 in the production pipeline. The OCR backend (pytesseract + Tesseract 5.x) is installed and mocked tests pass; spot-checking on the curated `.jpg` evidence frames is still the cheapest sanity check.
+- Why ColQwen produces NaN on specific 720p inputs. 15 frames skipped this run; root cause not investigated. Repro: `frames/nXafozNIk3c/frame_000021.png` is one of them.
+- Whether bge-reranker-v2-m3 would rescue any row when given the top-200+ MaxSim candidates (the gold chunks rank 137-172, so the rerank window must be ≥200). Listed as option (2) above.
+
+## Reproducibility
+
+```bash
+# substrate (already done this session):
+yt-dlp >= 2026.3.17                     # operator-side, currently 2026.03.17
+mv videos/ai_engineering_v0/*.mp4 .360p_backup/  # preserve old
+uv run python -m scripts.fetch_video --corpus ai_engineering_v0 --corpus-all
+# DELETE FROM frames WHERE video_id IN (...) ; (CASCADE to frame_patches)
+uv run python -m ingest.cli <video_id>  # re-enqueue
+uv run python -m scripts.drain_ingest_queue ingest_frames
+uv run python -m scripts.drain_ingest_queue ingest_embed_frames   # ~28 min Mac MPS
+
+# eval (this run):
+uv run python -m eval.runners.run_visual_eval
+
+# ablation:
+PYTHONPATH=. uv run python eval/reports/2026-05-28_visual_ablations/run_ablations.py
+```
+
+## Gates run
+
+```
+make validate-evals-strict     OK
+make phase0-gate               OK (29 verified / 3 talks)
+make test                      142 passed, 201 deselected
+make lint                      All checks passed
+```
+
+The slow eval test (`pytest -m slow eval/tests/test_run_visual_eval.py`) was last run at v3 close (2 passed in 769s); not re-run in v4 because the only change in `measure_visual.py` since v3 was the TODO(v4) marker comment, and `eval/runners/run_visual_eval.py` is unchanged. The headline run itself doubles as the slow integration test.
+
+## OCR audit payload — still required before any future positive
+
+Same gap as documented in v3 `integrity_check.md` §B. The runner writes only the `visual_answer_grounding_at_k` boolean. With 0/10 positives in v4, the gap stays inert. Any future positive (from option 2 or 3 above) must land the structured payload first:
+
+- `evaluated_frame_ids: [int]`
+- `evaluated_image_paths: [str]`
+- `ocr_excerpts: {frame_id: str}`
+- `matched_term: str | null`
+- `failure_reason: str | null`
+
+`TODO(v4)` markers in `eval/runners/measure_visual.py:562` and `eval/runners/run_visual_eval.py:127` (unchanged from v3) still reference this gap.
+
+## File map
+
+```
+eval/reports/2026-05-28_visual_eval_v4/
+  methodology.mdx     — this file
+  summary.json        — full dump of eval_runs.summary for visual-eval-0acd933a1c18
+  per_example.jsonl   — 18 rows incl. top_k_frames + top_k_chunks for auditing
+
+eval/reports/2026-05-28_visual_ablations/
+  run_ablations.py    — diagnostic script (this run actually executed it)
+  ablation_data.jsonl — 30 rows (10 examples × 3 K values), all fields per spec
+  report.md           — narrative summary + per-example MaxSim deep-dive
+  DEFERRED.md         — staged in v3; now superseded by report.md
+
+ingest/handlers.py + db/repos/frames.py
+  — defensive NaN/inf skip in embed_frames_handler; on skip it calls the new
+    frames_repo.clear_embeddings(conn, frame_id) to NULL pooled_embedding and
+    DELETE frame_patches, so a skipped frame is genuinely absent from
+    retrieval (no stale vector survives a re-embed). Covered by three fast
+    tests in eval/tests/test_handlers_fast.py.
+```

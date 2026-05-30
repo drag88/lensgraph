@@ -1,0 +1,151 @@
+{
+  "answer_term_hit_at_k": 0.0,
+  "answer_term_hit_n_evaluable": 10,
+  "answer_term_hit_n_skipped": 8,
+  "candidate_id": "colqwen2.5",
+  "candidate_set_yaml_sha256": "f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1",
+  "component": "visual_retrieval",
+  "frame_tolerance_sec": 10.0,
+  "k": 5,
+  "measurement_mode": "real_visual_gold_sweep",
+  "n_examples": 18,
+  "per_example": {
+    "visual-google-adk2-resume-stopped-agents-screen": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": null
+    },
+    "visual-google-agent-cli-getting-started-screen": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": null
+    },
+    "visual-required-google-adk-resumability-config-code": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-google-adk-resume-version-and-caveat": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-google-agents-cli-seven-skills-list": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-sally-current-plan-block": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-sally-jq-grepjson-queries": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-sally-lessons-recoverable-exceptions": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-tengyu-accuracy-plot-axes": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-tengyu-accuracy-plot-models": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-tengyu-hybrid-search-diagram": {
+      "answer_term_hit": false,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-required-tengyu-matryoshka-chart-axes": {
+      "answer_term_hit": false,
+      "chunk_pass": true,
+      "frame_pass": false,
+      "visual_answer_grounding": false
+    },
+    "visual-sally-large-json-composable-tools": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": true,
+      "visual_answer_grounding": null
+    },
+    "visual-sally-planning-tools-states-finish-gate": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": null
+    },
+    "visual-tengyu-library-analogy-slide": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": null
+    },
+    "visual-tengyu-matryoshka-quantization-slide": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": null
+    },
+    "visual-tengyu-query-document-enhancement-slide": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": null
+    },
+    "visual-tengyu-retrieval-accuracy-plot": {
+      "answer_term_hit": null,
+      "chunk_pass": false,
+      "frame_pass": false,
+      "visual_answer_grounding": null
+    }
+  },
+  "substrate_per_video": {
+    "W_CYk2ogcDI": {
+      "patches": 80410,
+      "pooled_frames": 110
+    },
+    "aie_sg_2026_d2_arize_alyx": {
+      "patches": 71638,
+      "pooled_frames": 98
+    },
+    "nXafozNIk3c": {
+      "patches": 223686,
+      "pooled_frames": 306
+    }
+  },
+  "visual_answer_grounding_at_k": 0.0,
+  "visual_answer_grounding_n_evaluable": 10,
+  "visual_answer_grounding_n_skipped": 8,
+  "visual_chunk_tr_at_k": 0.05555555555555555,
+  "visual_frame_recall_at_k": 0.05555555555555555,
+  "visual_lift": {
+    "answer_term_n_evaluable": 10,
+    "answer_term_with_visual_rate": 0.0,
+    "answer_term_without_visual_rate": 0.0,
+    "lift_answer_term_pp": 0.0,
+    "lift_chunk_tr_pp": 0.0,
+    "lift_pp": 0.0,
+    "with_visual_pass_rate": 1.0,
+    "without_visual_pass_rate": 1.0
+  }
+}
