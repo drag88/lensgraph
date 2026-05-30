@@ -28,7 +28,7 @@ experiment scoped in `prompts/prompt49.md`. Not implemented this session.
 | `eval/reports/2026-05-28_visual_ablations/report.md` | **Committed, revised.** Preamble 360p/529-pooled/163,990 → 720p/514/375,734/1280×720; "529 have pooled" → "514 of 529"; replaced the stale "cosine-blind, embedding-side" conclusion with the accurate two-stage reading (Codex findings 2-4). |
 | `eval/reports/2026-05-28_visual_eval_v4/{methodology.mdx,summary.json,per_example.jsonl}` | **Committed.** methodology.mdx reframed (two stacked failures; top-100→≥200 rerank window; recommendation points at the research matrix). summary.json + per_example.jsonl verified against the DB row and committed as-is. |
 | `eval/reports/2026-05-28_visual_ablations/ablation_data.jsonl` | **Committed.** Truth source for the K-sweep; 30 rows (10×3), confirms the 720p reality. |
-| `dev/active/phase-2-week-7/handoff.md` | **Committed.** v4 mid-session refresh; reviewed, consistent with verified facts. |
+| `dev/active/phase-2-week-7/handoff.md` | **Committed, marked superseded.** v4 mid-session draft. Carries a banner pointing here; two stale lines (NaN skip "uncommitted"; "top-100" reranker guidance) and the imprecise "MaxSim, not prefilter" framing are corrected in the banner and in this handoff. Read week 8, not week 7, for current direction. |
 
 Discarded: nothing. Everything in v4 scope was verifiable and is kept.
 

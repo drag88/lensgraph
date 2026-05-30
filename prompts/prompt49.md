@@ -32,8 +32,12 @@ Read first:
 ### Phase A — recall fix (no new model, pure offline)
 
 Recompute the prefilter signal over the existing 514 frames' patch arrays using
-`HierarchicalTokenPooler(pool_factor=3)` from `colpali-engine` (and, as a second
-arm, Gaussian same-length smoothing per arXiv:2602.12510), set `prefilter_k=500`,
+`colpali-engine`'s hierarchical token pooler — the verified local API is
+`from colpali_engine.compression.token_pooling import HierarchicalTokenPooler`,
+then `HierarchicalTokenPooler().pool_embeddings(embeddings, pool_factor=3)` (the
+`pool_factor` is an argument to `pool_embeddings`, not the constructor). As a
+second arm, Gaussian same-length smoothing per arXiv:2602.12510. Set
+`prefilter_k=500`,
 and measure `VisualFrameRecall@{5,10,20,200}` on the 10-example visual-required
 slice. Zero model load, zero MPS contention. This is a precondition — ranking
 fixes are pointless until gold frames are in the candidate set.

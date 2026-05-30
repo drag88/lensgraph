@@ -1,5 +1,15 @@
 # Handoff — Phase 2 Week 7 (visual eval v4 — 720p + ablation)
 
+> **SUPERSEDED by `dev/active/phase-2-week-8/handoff.md` (2026-05-29).** Kept for
+> provenance as the v4 mid-session draft. Two lines below are now stale and
+> corrected in week 8: the NaN/inf skip is **committed** (`66c7554`, with a
+> `frames_repo.clear_embeddings` clear-on-skip + tests), not uncommitted; and the
+> "top-100 reranker" guidance is wrong — gold chunks rank 137-172, so any rerank
+> window must be **≥200**. The "MaxSim, not prefilter" framing in the Status line
+> is also imprecise: production is prefilter-limited at K=200 (7/10 gold frames
+> miss), and the MaxSim floor only surfaces once the prefilter is widened to
+> K=500. Use the week-8 handoff and `prompts/prompt49.md` for current direction.
+
 Opened: 2026-05-28 (visual eval v3 closed earlier today at HEAD 1767704)
 Status: visual eval v4 shipped. 720p re-ingest done. Prefilter ablation done. The blocker is now isolated: **ColQwen2.5 MaxSim**, not prefilter, not OCR, not source resolution.
 Prior handoff state: visual eval v3 stack accepted by Codex review at HEAD 1767704.
