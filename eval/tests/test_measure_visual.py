@@ -14,12 +14,20 @@ import pytest
 
 from eval.runners.measure_visual import (
     FRAME_SAMPLE_EVERY_SEC,
+    GROUNDING_FAILURE_REASONS,
+    GROUNDING_NO_IN_WINDOW_FRAME,
+    GROUNDING_OCR_NO_TERMS_MATCHED,
+    GROUNDING_ROW_NOT_EVALUABLE,
     VisualEvidenceItem,
     VisualGoldQuery,
+    VisualGroundingAudit,
+    _grounding_to_dict,
     answer_term_hit_at_k,
     answer_term_matches_at_k,
     chunk_passes_at_k,
     chunk_text_contains_evidence,
+    evidence_matched_terms,
+    frame_ocr_grounding_at_k,
     frame_ocr_matches_at_k,
     frame_passes_at_k,
     load_visual_evidence,
@@ -227,10 +235,12 @@ def test_measure_visual_shape_matches_runner_contract(monkeypatch):
         "frame_pass_at_k",
         "chunk_pass_at_k",
         "answer_term_hit_at_k",
-        "visual_answer_grounding_at_k",
+        "visual_answer_grounding",
         "top_k_frames",
         "top_k_chunks",
     }
+    # No evidence supplied → the audit sub-object is None, not a dict.
+    assert detail["a"]["visual_answer_grounding"] is None
 
 
 # ---- visual_lift_at_k -----------------------------------------------------
@@ -900,6 +910,139 @@ def test_frame_ocr_distinguishes_code_identifier_from_prose():
     assert frame_ocr_matches_at_k([code_frame], g, evidence, k=5, ocr_fn=lambda p: canned[p])
 
 
+# ---- frame_ocr_grounding_at_k (audit payload) ---------------------------
+
+
+def test_frame_ocr_grounding_pass_records_frame_path_and_matched_term():
+    """A passing audit carries a non-empty evaluated_frame_ids, the
+    on-disk path, an OCR excerpt keyed by frame_id, the matched curator
+    term, and failure_reason=None. This is the spot-checkable payload a
+    positive VAG row must carry."""
+    g = _gold(2010, 2030, video="nXafozNIk3c", ex_id="resumability")
+    frames = [_frame(video_id="nXafozNIk3c", frame_sec=2020, frame_id=42, rank=1)]
+    evidence = [
+        VisualEvidenceItem(
+            visual_element="code identifier",
+            required_any=("ResumabilityConfig", "is_resumable=True"),
+            normalize="exact",
+        )
+    ]
+    canned = {"/tmp/42.png": "app = App(resumability_config=ResumabilityConfig(is_resumable=True))"}
+    audit = frame_ocr_grounding_at_k(frames, g, evidence, k=5, ocr_fn=lambda p: canned[p])
+    assert isinstance(audit, VisualGroundingAudit)
+    assert audit.passed is True
+    assert audit.evaluated_frame_ids == (42,)
+    assert audit.evaluated_image_paths == ("/tmp/42.png",)
+    assert audit.ocr_excerpts[42].startswith("app = App(")
+    # First required_any term that hit (original casing), not the second.
+    assert audit.matched_term == "ResumabilityConfig"
+    assert audit.failure_reason is None
+    assert audit.judge_kind == "ocr"
+
+
+def test_frame_ocr_grounding_multi_item_conjunction_joins_matched_terms():
+    """When evidence is a conjunction of items, matched_term records the
+    per-item hit joined with ' AND ' so the spot-check sees every term
+    that grounded the pass."""
+    g = _gold(2010, 2030, video="v1", ex_id="ex")
+    frames = [_frame(video_id="v1", frame_sec=2020, frame_id=7, rank=1)]
+    evidence = [
+        VisualEvidenceItem(
+            visual_element="plan", required_any=("Sort by latency",), normalize="exact"
+        ),
+        VisualEvidenceItem(
+            visual_element="call", required_any=('todo_update(status="done")',), normalize="exact"
+        ),
+    ]
+    canned = {"/tmp/7.png": 'Plan: Sort by latency\ntodo_update(status="done")'}
+    audit = frame_ocr_grounding_at_k(frames, g, evidence, k=5, ocr_fn=lambda p: canned[p])
+    assert audit.passed is True
+    assert audit.matched_term == 'Sort by latency AND todo_update(status="done")'
+    assert audit.failure_reason is None
+
+
+def test_frame_ocr_grounding_failure_no_in_window_frame():
+    """Window gate emptied the candidate set (right video + terms, but the
+    frame is outside the gold span ± tolerance) → passed=False,
+    evaluated_frame_ids empty, failure_reason=no_in_window_frame."""
+    g = _gold(2010, 2030, video="v1", ex_id="ex")
+    # Window is [2000, 2040]; this frame is well outside it.
+    frames = [_frame(video_id="v1", frame_sec=2200, frame_id=9, rank=1)]
+    evidence = [VisualEvidenceItem(visual_element="x", required_any=("hit",))]
+    audit = frame_ocr_grounding_at_k(frames, g, evidence, k=5, ocr_fn=lambda _p: "the hit is here")
+    assert audit.passed is False
+    assert audit.evaluated_frame_ids == ()
+    assert audit.matched_term is None
+    assert audit.failure_reason == GROUNDING_NO_IN_WINDOW_FRAME
+
+
+def test_frame_ocr_grounding_failure_ocr_no_terms_matched():
+    """An in-window frame was evaluated but no curator term appears in its
+    OCR text → passed=False, evaluated_frame_ids non-empty, the excerpt is
+    captured, failure_reason=ocr_no_terms_matched."""
+    g = _gold(2010, 2030, video="v1", ex_id="ex")
+    frames = [_frame(video_id="v1", frame_sec=2020, frame_id=11, rank=1)]
+    evidence = [
+        VisualEvidenceItem(
+            visual_element="x", required_any=("ResumabilityConfig",), normalize="exact"
+        )
+    ]
+    canned = {"/tmp/11.png": "this slide only has paraphrased prose about resumability"}
+    audit = frame_ocr_grounding_at_k(frames, g, evidence, k=5, ocr_fn=lambda p: canned[p])
+    assert audit.passed is False
+    assert audit.evaluated_frame_ids == (11,)
+    assert audit.ocr_excerpts[11].startswith("this slide only")
+    assert audit.matched_term is None
+    assert audit.failure_reason == GROUNDING_OCR_NO_TERMS_MATCHED
+
+
+def test_frame_ocr_grounding_excerpt_truncated_to_500_chars():
+    """OCR excerpts are capped so the JSONB blob does not carry full-page
+    OCR dumps."""
+    g = _gold(2010, 2030, video="v1", ex_id="ex")
+    frames = [_frame(video_id="v1", frame_sec=2020, frame_id=13, rank=1)]
+    evidence = [VisualEvidenceItem(visual_element="x", required_any=("needle",))]
+    long_text = "x" * 900 + "needle"
+    audit = frame_ocr_grounding_at_k(frames, g, evidence, k=5, ocr_fn=lambda _p: long_text)
+    assert len(audit.ocr_excerpts[13]) == 500
+
+
+def test_grounding_to_dict_stringifies_keys_and_lists_tuples():
+    """JSONB serialization: ocr_excerpts keys become strings; the frame-id
+    and path tuples become lists. The whole shape must be json-roundtrippable."""
+    audit = VisualGroundingAudit(
+        passed=True,
+        evaluated_frame_ids=(1, 2),
+        evaluated_image_paths=("/tmp/1.png", "/tmp/2.png"),
+        ocr_excerpts={1: "alpha", 2: "beta"},
+        matched_term="alpha",
+        failure_reason=None,
+    )
+    d = _grounding_to_dict(audit)
+    assert d["evaluated_frame_ids"] == [1, 2]
+    assert d["evaluated_image_paths"] == ["/tmp/1.png", "/tmp/2.png"]
+    assert d["ocr_excerpts"] == {"1": "alpha", "2": "beta"}
+    assert d["matched_term"] == "alpha"
+    assert d["failure_reason"] is None
+    assert d["judge_kind"] == "ocr"
+    import json as _json
+
+    assert _json.loads(_json.dumps(d)) == d
+
+
+def test_evidence_matched_terms_mirrors_contains_bool():
+    """evidence_matched_terms is the term-recording view of
+    chunk_text_contains_evidence; the bool delegates to it."""
+    ev = [VisualEvidenceItem(visual_element="x", required_any=("foo", "bar"))]
+    assert evidence_matched_terms("a bar b", ev) == ["bar"]
+    assert chunk_text_contains_evidence("a bar b", ev) is True
+    assert evidence_matched_terms("nothing here", ev) is None
+    assert chunk_text_contains_evidence("nothing here", ev) is False
+    # Empty evidence is a vacuous match in both views.
+    assert evidence_matched_terms("anything", []) == []
+    assert chunk_text_contains_evidence("anything", []) is True
+
+
 # ---- visual_answer_grounding_at_k (aggregator) ---------------------------
 
 
@@ -932,7 +1075,7 @@ def test_visual_answer_grounding_at_k_skips_rows_without_evidence():
     def stub_ocr(_path):
         return "this frame contains the HIT term"
 
-    score, passes, top_ks = visual_answer_grounding_at_k(
+    score, audits, top_ks = visual_answer_grounding_at_k(
         conn=None,
         examples=examples,
         evidence_by_example=evidence_by_example,
@@ -942,7 +1085,16 @@ def test_visual_answer_grounding_at_k_skips_rows_without_evidence():
     )
     # Denominator = 2 (rows a and c). Numerator = 1 (only row a hits).
     assert score == 0.5
-    assert passes == [True, None, False]
+    # Per-example element is now a VisualGroundingAudit | None.
+    assert audits[0] is not None and audits[0].passed is True
+    # row b: no curator evidence → not evaluable → None sub-object. The
+    # row_not_evaluable enum is the published label for this null case.
+    assert audits[1] is None
+    assert GROUNDING_ROW_NOT_EVALUABLE in GROUNDING_FAILURE_REASONS
+    assert GROUNDING_ROW_NOT_EVALUABLE == "row_not_evaluable"
+    assert audits[2] is not None and audits[2].passed is False
+    # row c: in-window frame OCR'd but the curator term is absent.
+    assert audits[2].failure_reason == GROUNDING_OCR_NO_TERMS_MATCHED
     assert len(top_ks) == 3
     # Even the skipped row gets its top-k captured for the methodology MDX.
     assert len(top_ks[1]) == 1
@@ -956,7 +1108,7 @@ def test_visual_answer_grounding_at_k_all_rows_lack_evidence_returns_zero():
     def stub_frames(_c, _q):
         return [_frame(frame_sec=175, frame_id=1)]
 
-    score, passes, top_ks = visual_answer_grounding_at_k(
+    score, audits, top_ks = visual_answer_grounding_at_k(
         conn=None,
         examples=examples,
         evidence_by_example={},
@@ -965,14 +1117,14 @@ def test_visual_answer_grounding_at_k_all_rows_lack_evidence_returns_zero():
         ocr_fn=lambda _p: "anything",
     )
     assert score == 0.0
-    assert passes == [None, None]
+    assert audits == [None, None]
     assert len(top_ks) == 2
 
 
 def test_visual_answer_grounding_at_k_empty_examples_returns_zero():
     """Empty input → zero score, empty lists. Matches the contract of
     the other aggregators."""
-    score, passes, top_ks = visual_answer_grounding_at_k(
+    score, audits, top_ks = visual_answer_grounding_at_k(
         conn=None,
         examples=[],
         evidence_by_example={"x": [VisualEvidenceItem(visual_element="x", required_any=("y",))]},
@@ -981,15 +1133,16 @@ def test_visual_answer_grounding_at_k_empty_examples_returns_zero():
         ocr_fn=lambda _p: "",
     )
     assert score == 0.0
-    assert passes == []
+    assert audits == []
     assert top_ks == []
 
 
 def test_measure_visual_surfaces_visual_answer_grounding_when_evidence_supplied(monkeypatch):
     """End-to-end shape check: when ``evidence_by_example`` is supplied,
-    ``measure_visual`` surfaces ``visual_answer_grounding_at_k`` +
-    ``_n_evaluable`` + ``_n_skipped`` in the summary AND
-    ``visual_answer_grounding_at_k`` in the per-example detail."""
+    ``measure_visual`` surfaces ``visual_answer_grounding_at_k`` (the
+    run-level float) + ``_n_evaluable`` + ``_n_skipped`` in the summary,
+    the headline boolean under ``summary.per_example[...]``, AND the full
+    ``visual_answer_grounding`` audit dict in the per-example detail."""
     examples = [
         _gold(170, 180, ex_id="a", video="v1"),
         _gold(300, 320, ex_id="b", video="v1"),  # no evidence — skipped
@@ -1019,5 +1172,16 @@ def test_measure_visual_surfaces_visual_answer_grounding_when_evidence_supplied(
     assert summary["visual_answer_grounding_at_k"] == 1.0
     assert summary["visual_answer_grounding_n_evaluable"] == 1
     assert summary["visual_answer_grounding_n_skipped"] == 1
-    assert detail["a"]["visual_answer_grounding_at_k"] is True
-    assert detail["b"]["visual_answer_grounding_at_k"] is None
+    # Summary keeps the headline boolean view.
+    assert summary["per_example"]["a"]["visual_answer_grounding"] is True
+    assert summary["per_example"]["b"]["visual_answer_grounding"] is None
+    # Detail now carries the full audit sub-object (dict) for evaluable
+    # rows and None for skipped rows.
+    audit_a = detail["a"]["visual_answer_grounding"]
+    assert isinstance(audit_a, dict)
+    assert audit_a["passed"] is True
+    assert audit_a["matched_term"] == "hit"
+    assert audit_a["failure_reason"] is None
+    assert audit_a["evaluated_frame_ids"] == [1]
+    assert audit_a["judge_kind"] == "ocr"
+    assert detail["b"]["visual_answer_grounding"] is None

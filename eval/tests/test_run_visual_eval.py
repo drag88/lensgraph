@@ -64,9 +64,7 @@ def _check_substrate() -> tuple[int, int]:
 
 def _count_visual_eval_rows() -> set[str]:
     with psycopg.connect(resolve_dsn(), autocommit=True) as c:
-        rows = c.execute(
-            "SELECT run_id FROM eval_runs WHERE code_path = 'visual_eval'"
-        ).fetchall()
+        rows = c.execute("SELECT run_id FROM eval_runs WHERE code_path = 'visual_eval'").fetchall()
     return {r[0] for r in rows}
 
 
@@ -102,15 +100,11 @@ def test_visual_eval_skips_or_runs_against_live_db():
     try:
         if not gold_ready:
             assert "SKIPPED: visual_gold.jsonl has 0 single_clip" in proc.stdout, proc.stdout
-            assert new_ids == set(), (
-                f"skip path must write nothing; got new rows {new_ids}"
-            )
+            assert new_ids == set(), f"skip path must write nothing; got new rows {new_ids}"
             return
         if not substrate_ready:
             assert "SKIPPED: visual substrate not ingested" in proc.stdout, proc.stdout
-            assert new_ids == set(), (
-                f"skip path must write nothing; got new rows {new_ids}"
-            )
+            assert new_ids == set(), f"skip path must write nothing; got new rows {new_ids}"
             return
 
         # Happy path: both gold + substrate populated. Assert one new
@@ -146,6 +140,33 @@ def test_visual_eval_skips_or_runs_against_live_db():
             assert "chunk_pass_at_k" in metrics
             assert isinstance(metrics["frame_pass_at_k"], bool)
             assert isinstance(metrics["chunk_pass_at_k"], bool)
+            # VisualAnswerGrounding is now a structured audit sub-object
+            # (dict) or None — the old scalar key is gone (no shim).
+            assert "visual_answer_grounding_at_k" not in metrics
+            assert "visual_answer_grounding" in metrics
+            vag = metrics["visual_answer_grounding"]
+            assert vag is None or isinstance(vag, dict)
+            if isinstance(vag, dict):
+                # Every evaluable row's payload is self-defending: it names
+                # the frames it judged and carries the pass flag + reason.
+                assert set(vag) >= {
+                    "passed",
+                    "evaluated_frame_ids",
+                    "evaluated_image_paths",
+                    "ocr_excerpts",
+                    "matched_term",
+                    "failure_reason",
+                    "judge_kind",
+                }
+                assert isinstance(vag["passed"], bool)
+                # A passing row must name a frame and a term; a failing row
+                # must name a reason. No silent pass with empty evidence.
+                if vag["passed"]:
+                    assert vag["evaluated_frame_ids"]
+                    assert vag["matched_term"] is not None
+                    assert vag["failure_reason"] is None
+                else:
+                    assert vag["failure_reason"] is not None
     finally:
         # CASCADE on eval_runs.run_id reaps the matching eval_results rows.
         if new_ids:
@@ -249,9 +270,7 @@ def test_skip_when_visual_gold_video_has_no_substrate(test_db, tmp_path, monkeyp
     assert proc.returncode == 0, (
         f"per-video skip must exit 0; stdout={proc.stdout}\nstderr={proc.stderr}"
     )
-    assert "visual substrate not ingested for visual_gold video_id(s)" in proc.stdout, (
-        proc.stdout
-    )
+    assert "visual substrate not ingested for visual_gold video_id(s)" in proc.stdout, proc.stdout
     assert visual_video in proc.stdout, proc.stdout
 
     with psycopg.connect(test_db, autocommit=True) as c:

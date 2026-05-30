@@ -122,18 +122,19 @@ def _write_per_example_results(
 ) -> None:
     """Emit one ``eval_results`` row per visual gold example under
     ``run_id``. ``system_output`` carries the gold span + per-channel
-    top-k frames/chunks; ``metrics`` carries the pass booleans."""
+    top-k frames/chunks; ``metrics`` carries the three pass booleans plus
+    the VisualAnswerGrounding audit sub-object (dict | None)."""
     for example_id, detail in per_example_detail.items():
-        # TODO(v4): Replace the visual_answer_grounding_at_k bool with a
-        # structured audit payload (evaluated_frame_ids, ocr_excerpts,
-        # matched_term, failure_reason). Required before any future positive
-        # VisualAnswerGrounding result can be defended in a report. See
-        # eval/reports/2026-05-28_visual_eval_v3/integrity_check.md §B.
         metrics = {
             "frame_pass_at_k": detail["frame_pass_at_k"],
             "chunk_pass_at_k": detail["chunk_pass_at_k"],
             "answer_term_hit_at_k": detail.get("answer_term_hit_at_k"),
-            "visual_answer_grounding_at_k": detail.get("visual_answer_grounding_at_k"),
+            # Structured audit payload (dict | None): passed, evaluated_frame_ids,
+            # evaluated_image_paths, ocr_excerpts, matched_term, failure_reason,
+            # judge_kind. Replaces the old scalar visual_answer_grounding_at_k so
+            # a positive row records which frame/term grounded it. The run-level
+            # float stays in eval_runs.summary.
+            "visual_answer_grounding": detail.get("visual_answer_grounding"),
         }
         if "lift" in detail:
             metrics["lift"] = detail["lift"]

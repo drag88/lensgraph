@@ -110,6 +110,11 @@ _TESSERACT_PSM = 3
 # today and gives headroom for v1 (~5x).
 _OCR_CACHE_SIZE = 4096
 
+# Per-frame OCR excerpt length recorded in the VisualAnswerGrounding
+# audit payload. Enough to confirm by eye which slide text grounded a
+# positive without bloating the JSONB blob with full-page OCR dumps.
+_OCR_EXCERPT_CHARS = 500
+
 _VISUAL_GOLD_PATH = (
     Path(__file__).resolve().parent.parent / "corpora" / "ai_engineering_v0" / "visual_gold.jsonl"
 )
@@ -269,6 +274,39 @@ def normalize_text(text: str, mode: str) -> str:
     raise ValueError(f"unknown normalize mode: {mode!r}")
 
 
+def evidence_matched_terms(
+    chunk_text: str,
+    evidence: Sequence[VisualEvidenceItem],
+) -> list[str] | None:
+    """Per-item record of WHICH ``required_any`` term satisfied each
+    ``VisualEvidenceItem``.
+
+    Returns the list of matched terms (one per item, in the ORIGINAL
+    un-normalized form for readability) iff EVERY item is satisfied;
+    returns ``None`` as soon as any item has no matching term. Empty
+    ``evidence`` returns ``[]`` (vacuous match).
+
+    This is the shared conjunction primitive: ``chunk_text_contains_evidence``
+    is the boolean view of it, and the VisualAnswerGrounding audit reads
+    the term list to populate ``matched_term``.
+    """
+    matched: list[str] = []
+    for item in evidence:
+        normalized_chunk = normalize_text(chunk_text, item.normalize)
+        hit = next(
+            (
+                term
+                for term in item.required_any
+                if (nt := normalize_text(term, item.normalize)) and nt in normalized_chunk
+            ),
+            None,
+        )
+        if hit is None:
+            return None
+        matched.append(hit)
+    return matched
+
+
 def chunk_text_contains_evidence(
     chunk_text: str,
     evidence: Sequence[VisualEvidenceItem],
@@ -281,12 +319,7 @@ def chunk_text_contains_evidence(
     "no evidence on this row" case at the aggregator level — see
     ``answer_term_hit_at_k``.
     """
-    for item in evidence:
-        normalized_chunk = normalize_text(chunk_text, item.normalize)
-        normalized_terms = [normalize_text(t, item.normalize) for t in item.required_any]
-        if not any(t in normalized_chunk for t in normalized_terms if t):
-            return False
-    return True
+    return evidence_matched_terms(chunk_text, evidence) is not None
 
 
 def answer_term_matches_at_k(
@@ -427,6 +460,137 @@ def frame_ocr_matches_at_k(
     return False
 
 
+# Failure-reason enum for the VisualAnswerGrounding audit (the field is
+# None on a pass). Judge-agnostic per the audit-payload design:
+#   * no_in_window_frame   — the window gate emptied the candidate set
+#                            before the judge ran (the actual 0/10 cause
+#                            on the 2026-05-28 run). Set by the OCR judge.
+#   * ocr_no_terms_matched — in-window frames were OCR'd, no curator term
+#                            hit. Set by the OCR judge.
+#   * row_not_evaluable    — no curator evidence on the row. The aggregator
+#                            represents this as a None sub-object (not an
+#                            audit), matching how answer_term_hit_at_k
+#                            carries None; this constant is the published
+#                            label for that null case (readers, the future
+#                            VLM path). Never assigned to a built audit.
+GROUNDING_NO_IN_WINDOW_FRAME = "no_in_window_frame"
+GROUNDING_OCR_NO_TERMS_MATCHED = "ocr_no_terms_matched"
+GROUNDING_ROW_NOT_EVALUABLE = "row_not_evaluable"
+GROUNDING_FAILURE_REASONS = frozenset(
+    {GROUNDING_NO_IN_WINDOW_FRAME, GROUNDING_OCR_NO_TERMS_MATCHED, GROUNDING_ROW_NOT_EVALUABLE}
+)
+
+
+@dataclass(frozen=True)
+class VisualGroundingAudit:
+    """Self-defending record of a single VisualAnswerGrounding@k judgement.
+
+    A bare ``passed`` bool cannot be spot-checked: there is nothing to
+    read for which frame was OCR'd, which slide text it found, or which
+    curator term grounded it. This payload makes every positive row
+    reconstructable from the DB without re-running the pipeline (see
+    ``dev/active/phase-2-week-8/audit_payload_design.md``).
+
+    ``evaluated_frame_ids`` / ``evaluated_image_paths`` are index-aligned;
+    ``ocr_excerpts`` is keyed by frame_id (int in-process, stringified at
+    JSONB write). ``matched_term`` is the curator term(s) that grounded
+    the pass, joined with " AND " for a multi-item conjunction, or None on
+    a fail. ``failure_reason`` is one of the three module-level enum
+    constants, or None on a pass. ``judge_kind`` discriminates the OCR
+    path from the future VLM-judge path so the two never overwrite each
+    other's evidence field.
+    """
+
+    passed: bool
+    evaluated_frame_ids: tuple[int, ...]
+    evaluated_image_paths: tuple[str, ...]
+    ocr_excerpts: dict[int, str]
+    matched_term: str | None
+    failure_reason: str | None
+    judge_kind: str = "ocr"
+
+
+def frame_ocr_grounding_at_k(
+    frames: Sequence[FrameResult],
+    gold: VisualGoldQuery,
+    evidence: Sequence[VisualEvidenceItem],
+    *,
+    k: int,
+    ocr_fn: OcrFn,
+    tolerance_sec: float = FRAME_SAMPLE_EVERY_SEC,
+) -> VisualGroundingAudit:
+    """Structured-audit twin of ``frame_ocr_matches_at_k``.
+
+    Same window gate (right ``video_id``, ``frame_sec`` inside the gold
+    span ± ``tolerance_sec``) and same evidence conjunction. Additionally
+    records the in-window top-k frame IDs the judge actually ran against,
+    captures a per-frame OCR excerpt, and reports which curator term hit
+    (``matched_term``) or why nothing did (``failure_reason``).
+
+    Every in-window frame is OCR'd (not short-circuited on first match)
+    so the payload carries the full evaluated set for the spot-check;
+    ``passed`` / ``matched_term`` come from the first frame that satisfies
+    the conjunction. ``frame_ocr_text`` is LRU-cached by path, so the
+    extra OCR calls are cheap on a re-run.
+
+    Empty ``evidence`` is undefined here — callers gate the no-evidence
+    row at the aggregator, where it becomes a ``None`` audit rather than a
+    scored row (``failure_reason`` ``row_not_evaluable`` is reserved for
+    that aggregator-level case).
+    """
+    lo = gold.start_sec - tolerance_sec
+    hi = gold.end_sec + tolerance_sec
+    evaluated_ids: list[int] = []
+    evaluated_paths: list[str] = []
+    excerpts: dict[int, str] = {}
+    matched_term: str | None = None
+    passed = False
+    for f in frames[:k]:
+        if f.video_id != gold.video_id:
+            continue
+        if not (lo <= f.frame_sec <= hi):
+            continue
+        ocr_text = ocr_fn(f.image_path)
+        evaluated_ids.append(f.frame_id)
+        evaluated_paths.append(f.image_path)
+        excerpts[f.frame_id] = ocr_text[:_OCR_EXCERPT_CHARS]
+        terms = evidence_matched_terms(ocr_text, evidence)
+        if terms is not None and not passed:
+            passed = True
+            matched_term = " AND ".join(terms) if terms else None
+    if passed:
+        failure_reason: str | None = None
+    elif not evaluated_ids:
+        failure_reason = GROUNDING_NO_IN_WINDOW_FRAME
+    else:
+        failure_reason = GROUNDING_OCR_NO_TERMS_MATCHED
+    return VisualGroundingAudit(
+        passed=passed,
+        evaluated_frame_ids=tuple(evaluated_ids),
+        evaluated_image_paths=tuple(evaluated_paths),
+        ocr_excerpts=excerpts,
+        matched_term=matched_term,
+        failure_reason=failure_reason,
+    )
+
+
+def _grounding_to_dict(audit: VisualGroundingAudit) -> dict:
+    """Serialize a ``VisualGroundingAudit`` for the JSONB metrics blob.
+
+    Stringifies ``ocr_excerpts`` keys (JSONB object keys are strings) and
+    turns the frame-id / path tuples into lists. The reader casts the keys
+    back to int."""
+    return {
+        "passed": audit.passed,
+        "evaluated_frame_ids": list(audit.evaluated_frame_ids),
+        "evaluated_image_paths": list(audit.evaluated_image_paths),
+        "ocr_excerpts": {str(fid): text for fid, text in audit.ocr_excerpts.items()},
+        "matched_term": audit.matched_term,
+        "failure_reason": audit.failure_reason,
+        "judge_kind": audit.judge_kind,
+    }
+
+
 # --- Per-channel measurement loops (DB-bound) ------------------------------
 
 
@@ -563,13 +727,6 @@ def answer_term_hit_at_k(
     return score, passes, top_ks
 
 
-# TODO(v4): Replace the boolean return with a structured audit payload so any
-# future `vag = true` row can be defended. The 0/10 result on the 2026-05-28
-# headline run does not depend on this, but any positive result from a future
-# 720p re-ingest does. Minimum payload fields documented in
-# `eval/reports/2026-05-28_visual_eval_v3/integrity_check.md` §B:
-# evaluated_frame_ids, evaluated_image_paths, ocr_excerpts, matched_term,
-# failure_reason.
 def visual_answer_grounding_at_k(
     conn: psycopg.Connection,
     examples: Sequence[VisualGoldQuery],
@@ -579,7 +736,7 @@ def visual_answer_grounding_at_k(
     tolerance_sec: float = FRAME_SAMPLE_EVERY_SEC,
     frame_fn: FrameFn | None = None,
     ocr_fn: OcrFn | None = None,
-) -> tuple[float, list[bool | None], list[list[dict]]]:
+) -> tuple[float, list[VisualGroundingAudit | None], list[list[dict]]]:
     """Aggregate VisualAnswerGrounding@k over ``examples``.
 
     Frame-side answer-grounding: for each example with curator-supplied
@@ -592,16 +749,18 @@ def visual_answer_grounding_at_k(
     For each example:
 
     * If ``evidence_by_example`` has no (or empty) entry for the example,
-      that row is NOT evaluable — its slot in ``per_example_passes`` is
+      that row is NOT evaluable — its slot in ``per_example_audits`` is
       ``None``, and it contributes to neither the numerator nor the
       denominator of the returned ``score``.
-    * Otherwise, the row passes iff ``frame_ocr_matches_at_k`` is True.
+    * Otherwise the row gets a ``VisualGroundingAudit`` from
+      ``frame_ocr_grounding_at_k`` and passes iff ``audit.passed``.
 
-    Returns ``(score, per_example_passes, per_example_top_k_frames)``.
-    ``score`` is the mean over evaluable rows only. If no rows are
-    evaluable, ``score`` is 0.0 — callers should also inspect the
-    per-example list and the n_evaluable count before interpreting the
-    headline number.
+    Returns ``(score, per_example_audits, per_example_top_k_frames)``.
+    The per-example element is a ``VisualGroundingAudit`` for evaluable
+    rows and ``None`` for not-evaluable rows. ``score`` is the mean of
+    ``audit.passed`` over evaluable rows only. If no rows are evaluable,
+    ``score`` is 0.0 — callers should also inspect the per-example list
+    and the n_evaluable count before interpreting the headline number.
 
     This is the only metric in the module that validates the visual
     channel surfaced an answer-bearing frame. See module docstring for
@@ -611,7 +770,7 @@ def visual_answer_grounding_at_k(
     ocr = ocr_fn or frame_ocr_text
     if not examples:
         return 0.0, [], []
-    passes: list[bool | None] = []
+    audits: list[VisualGroundingAudit | None] = []
     top_ks: list[list[dict]] = []
     n_evaluable = 0
     n_pass = 0
@@ -620,16 +779,16 @@ def visual_answer_grounding_at_k(
         top_ks.append([_frame_to_dict(f) for f in frames[:k]])
         evidence = evidence_by_example.get(ex.example_id) or ()
         if not evidence:
-            passes.append(None)
+            audits.append(None)
             continue
-        hit = frame_ocr_matches_at_k(
+        audit = frame_ocr_grounding_at_k(
             frames, ex, evidence, k=k, ocr_fn=ocr, tolerance_sec=tolerance_sec
         )
-        passes.append(hit)
+        audits.append(audit)
         n_evaluable += 1
-        n_pass += int(hit)
+        n_pass += int(audit.passed)
     score = (n_pass / n_evaluable) if n_evaluable else 0.0
-    return score, passes, top_ks
+    return score, audits, top_ks
 
 
 def _rrf_with_visual(conn: psycopg.Connection, q: str, *, k: int) -> list[FusedResult]:
@@ -797,7 +956,7 @@ def measure_visual(
     answer_term_passes: list[bool | None] = [None] * len(examples)
     answer_term_score = 0.0
     n_evaluable = 0
-    grounding_passes: list[bool | None] = [None] * len(examples)
+    grounding_audits: list[VisualGroundingAudit | None] = [None] * len(examples)
     grounding_score = 0.0
     n_grounding_evaluable = 0
     if evidence_by_example:
@@ -805,7 +964,7 @@ def measure_visual(
             conn, examples, evidence_by_example, k=k
         )
         n_evaluable = sum(1 for p in answer_term_passes if p is not None)
-        grounding_score, grounding_passes, _g_topks = visual_answer_grounding_at_k(
+        grounding_score, grounding_audits, _g_topks = visual_answer_grounding_at_k(
             conn,
             examples,
             evidence_by_example,
@@ -813,7 +972,7 @@ def measure_visual(
             tolerance_sec=tolerance_sec,
             ocr_fn=ocr_fn,
         )
-        n_grounding_evaluable = sum(1 for p in grounding_passes if p is not None)
+        n_grounding_evaluable = sum(1 for a in grounding_audits if a is not None)
 
     summary: dict = {
         "visual_frame_recall_at_k": frame_score,
@@ -826,14 +985,16 @@ def measure_visual(
                 "frame_pass": bool(fp),
                 "chunk_pass": bool(cp),
                 "answer_term_hit": at,  # may be None (row not evaluable)
-                "visual_answer_grounding": vg,  # may be None (row not evaluable)
+                # Headline boolean view of the audit; the full payload
+                # lives in per_example_detail below. None = not evaluable.
+                "visual_answer_grounding": (vg.passed if vg is not None else None),
             }
             for ex, fp, cp, at, vg in zip(
                 examples,
                 frame_passes,
                 chunk_passes,
                 answer_term_passes,
-                grounding_passes,
+                grounding_audits,
                 strict=True,
             )
         },
@@ -856,7 +1017,7 @@ def measure_visual(
             "frame_pass_at_k": bool(fp),
             "chunk_pass_at_k": bool(cp),
             "answer_term_hit_at_k": at,
-            "visual_answer_grounding_at_k": vg,
+            "visual_answer_grounding": (_grounding_to_dict(vg) if vg is not None else None),
             "top_k_frames": ftk,
             "top_k_chunks": ctk,
         }
@@ -865,7 +1026,7 @@ def measure_visual(
             frame_passes,
             chunk_passes,
             answer_term_passes,
-            grounding_passes,
+            grounding_audits,
             frame_topks,
             chunk_topks,
             strict=True,
