@@ -1,5 +1,14 @@
 # Visual rerank probe — 2026-05-30
 
+> **RESOLVED (2026-05-30): the broken ColQwen load is fixed.** See
+> [`loader_fix.mdx`](./loader_fix.mdx) for the fix and the offline proof
+> (cross-process cosine 1.0, zero missing/unexpected LoRA keys, fixed-encoder
+> `VisualFrameRecall@5` = 10/10). This file is the original diagnosis and is kept
+> as the record. The broken-encoder pooling probe (`--phase a`) and its outputs
+> were removed as dead scaffold once the encoder was fixed; the table below is the
+> historical diagnostic, not reproducible from the current probe. **The DB
+> `frames`/`frame_patches` are still stale until a separately-approved re-ingest.**
+
 Status: **Phase A aborted on a root-cause finding that invalidates the week-8
 diagnosis.** Phase B (reranker) not run — it would be invalid on the broken
 encoder this probe uncovered.

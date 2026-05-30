@@ -70,20 +70,137 @@ def _resolve_model_id() -> str:
     raise KeyError(f"candidate {_CANDIDATE_ID!r} not found in visual_retrieval options")
 
 
+# LoRA projection-layer leaf names the colqwen2.5-v0.2 adapter targets. Used to
+# locate the live modules and remap the adapter's stale keys onto them.
+_LORA_TARGET_LEAVES = frozenset(
+    {"down_proj", "gate_proj", "up_proj", "k_proj", "q_proj", "v_proj", "o_proj", "custom_text_proj"}
+)
+
+
+def _suffix_from_layers(path: str) -> str:
+    """Return the stable module-path tail used to align an adapter key with a
+    live module: everything from ``layers.<N>.`` onward, or the leaf name for
+    top-level modules like ``custom_text_proj``."""
+    import re
+
+    m = re.search(r"layers\.\d+\..*$", path)
+    return m.group(0) if m else path.split(".")[-1]
+
+
+def _load_adapted_colqwen(adapter_id: str, device: str) -> Any:
+    """Load ColQwen2.5 base + the ``colqwen2.5-v0.2`` LoRA adapter, remapping the
+    adapter's stale parameter keys onto the live module names.
+
+    Why this is not a plain ``ColQwen2_5.from_pretrained(adapter_id)``: that path
+    is silently broken on this stack. The adapter was saved with text-decoder
+    keys ``base_model.model.model.layers.*``, but under the installed
+    transformers the live Qwen2.5-VL text decoder is ``language_model.layers.*``.
+    PEFT injects LoRA into the live (``language_model.*``) modules but then fails
+    to match the saved (``model.*``) weights onto them, so every LoRA layer is
+    left at its random init. The result is a non-deterministic encoder: the same
+    query encodes differently on each process load (cosine ~0.84 across loads),
+    and queries no longer match the frame patches the encoder produced at ingest.
+    See ``eval/reports/2026-05-30_visual_rerank_probe/methodology.mdx``.
+
+    The fix remaps the saved adapter keys onto the live module paths by matching
+    the ``layers.<N>.<...>`` suffix, then asserts the remapped key set is exactly
+    what PEFT expects for this model — zero missing, zero unexpected. A future
+    transformers/colpali bump that renames modules again will fail this assertion
+    loudly instead of silently degrading retrieval to noise.
+    """
+    import json
+    import tempfile
+
+    import safetensors.torch as st
+    import torch
+    from colpali_engine.models import ColQwen2_5
+    from huggingface_hub import hf_hub_download, snapshot_download
+    from peft import PeftModel
+    from peft.utils import get_peft_model_state_dict
+
+    dtype = torch.float16 if device == "mps" else torch.float32
+    cfg = json.loads(Path(hf_hub_download(adapter_id, "adapter_config.json")).read_text())
+    base_id = cfg["base_model_name_or_path"]
+    base = ColQwen2_5.from_pretrained(base_id, torch_dtype=dtype, device_map=device).eval()
+
+    # Second half of the same rename bug: the base checkpoint stores the token
+    # embeddings as ``model.embed_tokens.weight`` (old layout) and sets
+    # ``tie_word_embeddings: True``. Under the installed transformers the live
+    # module is ``language_model.embed_tokens`` and the tie logic leaves it at
+    # its random init — so even with the LoRA fixed, every process gets a
+    # different embedding table (the one parameter that differs across loads).
+    # Load the real weights from the checkpoint explicitly.
+    base_dir = Path(snapshot_download(base_id))
+    weight_map = json.loads((base_dir / "model.safetensors.index.json").read_text())["weight_map"]
+    embed_key = "model.embed_tokens.weight"
+    embed_shard = st.load_file(str(base_dir / weight_map[embed_key]))[embed_key]
+    embed_module = base.get_input_embeddings()
+    with torch.no_grad():
+        embed_module.weight.copy_(embed_shard.to(device=device, dtype=embed_module.weight.dtype))
+
+    # Map each live target module to its layers-suffix so adapter keys can be
+    # remapped onto whatever the current transformers calls the text decoder.
+    live_by_suffix: dict[str, str] = {}
+    for name, _module in base.named_modules():
+        if name and name.rsplit(".", 1)[-1] in _LORA_TARGET_LEAVES and "visual" not in name:
+            live_by_suffix.setdefault(_suffix_from_layers(name), name)
+
+    adapter_dir = Path(snapshot_download(adapter_id))
+    saved = st.load_file(str(adapter_dir / "adapter_model.safetensors"))
+    remapped: dict[str, Any] = {}
+    for key, value in saved.items():
+        body = key.removeprefix("base_model.model.")
+        for suf in (".lora_A.weight", ".lora_B.weight"):
+            if body.endswith(suf):
+                old_path, lora_suffix = body[: -len(suf)], suf
+                break
+        else:
+            raise RuntimeError(f"unexpected adapter key shape: {key}")
+        live_path = live_by_suffix.get(_suffix_from_layers(old_path))
+        if live_path is None:
+            raise RuntimeError(
+                f"adapter key {key!r} has no live target module — the model layout "
+                "changed; update the ColQwen adapter remap in embed/colqwen.py"
+            )
+        remapped[f"base_model.model.{live_path}{lora_suffix}"] = value
+
+    with tempfile.TemporaryDirectory(prefix="colqwen25_v02_remap_") as tmp:
+        tmp_dir = Path(tmp)
+        tmp_dir.joinpath("adapter_config.json").write_text(
+            (adapter_dir / "adapter_config.json").read_text()
+        )
+        st.save_file(remapped, str(tmp_dir / "adapter_model.safetensors"))
+        model = PeftModel.from_pretrained(base, str(tmp_dir), torch_dtype=dtype)
+
+    # Load-integrity gate: the keys we supplied must be exactly the keys PEFT
+    # expects for this model. Any mismatch means the adapter did not fully apply.
+    expected = set(get_peft_model_state_dict(model).keys())
+    supplied = set(remapped.keys())
+    missing = expected - supplied
+    unexpected = supplied - expected
+    if missing or unexpected:
+        raise RuntimeError(
+            f"ColQwen adapter load integrity failed: {len(missing)} missing, "
+            f"{len(unexpected)} unexpected LoRA keys (missing sample: {sorted(missing)[:2]}, "
+            f"unexpected sample: {sorted(unexpected)[:2]})"
+        )
+    return model.eval()
+
+
 @lru_cache(maxsize=1)
 def _model() -> Any:
     """Load ColQwen2.5 + its processor. Heavy import deferred until first
-    call. Model id resolved from model_candidates.yaml — see _resolve_model_id."""
+    call. Model id resolved from model_candidates.yaml — see _resolve_model_id.
+
+    The model load goes through ``_load_adapted_colqwen`` rather than a plain
+    ``from_pretrained`` because the v0.2 adapter's keys must be remapped onto the
+    current module layout — see that function for the full rationale."""
     import torch
-    from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
+    from colpali_engine.models import ColQwen2_5_Processor
 
     model_id = _resolve_model_id()
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    model = ColQwen2_5.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16 if device == "mps" else torch.float32,
-        device_map=device,
-    ).eval()
+    model = _load_adapted_colqwen(model_id, device)
     processor = ColQwen2_5_Processor.from_pretrained(model_id)
     return model, processor, device
 

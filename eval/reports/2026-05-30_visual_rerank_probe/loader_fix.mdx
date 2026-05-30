@@ -1,0 +1,114 @@
+# ColQwen2.5 loader fix — resolution of the visual-retrieval blocker
+
+Date: 2026-05-30. Follow-up to `methodology.mdx` (the diagnosis). This report
+records the fix and the offline proof. **No frames were re-ingested and no DB rows
+were written** — the stored `frames`/`frame_patches` are still from the broken
+encoder and remain stale until a separately-approved re-ingest.
+
+## Outcome
+
+The visual-required failure was a broken ColQwen2.5 model load, not pooling or
+MaxSim. The fix is in `embed/colqwen.py`. Under the fixed encoder, re-encoding the
+514 frames and 10 queries in memory, `VisualFrameRecall@5` goes from the broken
+encoder's noise to **10/10** — the gold frame lands at rank 1 on 8/10 rows and
+rank 2 on the other two. The week-8 "prefilter recall problem" and "MaxSim floor"
+were both artifacts of the broken encoder.
+
+## Two-part root cause
+
+Both halves come from a transformers key-rename: the Qwen2.5-VL text decoder,
+which the `colqwen2.5-v0.2` checkpoints were saved against as `model.*`, is
+`language_model.*` on the installed stack (`transformers 5.9.0`, `peft 0.19.1`,
+`colpali-engine 0.3.16`, `torch 2.11.0`).
+
+1. **LoRA adapter never applied.** The adapter's saved keys are
+   `base_model.model.model.layers.*`. PEFT injects LoRA into the live
+   `language_model.layers.*` modules but cannot match the saved `model.layers.*`
+   weights onto them, so every LoRA layer stayed at its random init.
+2. **Token embeddings randomly re-initialized (dominant).** The base checkpoint
+   stores the embedding as `model.embed_tokens.weight` with
+   `tie_word_embeddings: True`. Under the rename the live module is
+   `language_model.embed_tokens`, and the tie logic leaves it at its random init.
+   This was the single parameter that differed across process loads (confirmed by
+   hashing all 1332 parameters across two fresh processes — exactly one differed:
+   `language_model.embed_tokens.weight`).
+
+Because the DB's frame patches were encoded in one process (one random draw) and
+eval queries in another, query↔frame retrieval compared mismatched encoders — the
+near-uniform similarity floor week-8 attributed to MaxSim.
+
+## The fix (`embed/colqwen.py::_load_adapted_colqwen`)
+
+No fallback to the broken path, no compatibility shim. On load:
+
+1. Load base `vidore/colqwen2.5-base`.
+2. Copy the real `model.embed_tokens.weight` from the base checkpoint into the
+   live input-embedding module.
+3. Remap each saved adapter key onto the live module path by matching the
+   `layers.<N>.<...>` suffix (and the `custom_text_proj` head), then apply via
+   PEFT.
+4. **Integrity gate:** assert the remapped key set equals exactly the keys PEFT
+   expects — raise on any missing or unexpected LoRA key. A future
+   transformers/colpali bump that renames modules again fails loudly here instead
+   of silently degrading retrieval to noise.
+
+## Proof (offline, no DB writes)
+
+**Cross-process determinism.** The same fixed query encoded in two fresh
+processes:
+
+```
+text_query  cosine across processes: 1.00000000   (was 0.844 before the fix)
+query_patches maxdiff across processes: 0.00e+00
+```
+
+**Load integrity.** The adapter applies with **zero missing, zero unexpected**
+LoRA keys (the in-function gate does not raise); all 253 `lora_B` parameters load
+nonzero.
+
+**Token-embedding repair.** After the fix, exactly zero of 1332 parameters differ
+across process loads (was one: `embed_tokens`).
+
+**VisualFrameRecall** on the 10 visual-required rows, ranking by the production
+stage-(a) signal (cosine of mean-pooled query vs mean-pooled frame). The
+`fixed_reencode` arm re-encodes all 514 frame images AND the 10 queries with the
+fixed encoder; `stored_broken` ranks the fixed query against the stale stored
+embeddings (the production path as it stands today, pre-re-ingest):
+
+| arm | @5 | @10 | @20 | @200 |
+|---|---|---|---|---|
+| `stored_broken` (stale DB embeds vs fixed query) | 2/10 | 3/10 | 4/10 | 10/10 |
+| `fixed_reencode` (one consistent fixed encoder) | **10/10** | 10/10 | 10/10 | 10/10 |
+
+Per-row, the fixed encoder ranks the gold frame at 1 for 8/10 rows and 2 for
+`sally-lessons-recoverable-exceptions` and `google-adk-resume-version-and-caveat`.
+Mean-pooling is sufficient once the encoder is correct, so the week-8 pooling
+experiment (hierarchical / Gaussian) is moot and was removed from the probe.
+
+Reproduce: `uv run python -m eval.runners.run_visual_rerank_probe --phase a-fixed`
+(re-encodes ~514 images one-at-a-time, ~27 min on MPS; cached to
+`phase_a_fixed_frame_embeds.npz` thereafter). Data: `phase_a_fixed_data.jsonl`.
+
+## Regression guard
+
+`eval/tests/test_colqwen_loader_slow.py` (slow) covers both failure modes:
+cross-process determinism (cosine ≈ 1.0 across two independent process loads —
+an in-process check passes on the bug, so it is insufficient), the zero
+missing/unexpected LoRA-key integrity gate, and the `embed_tokens`-matches-the-
+checkpoint check.
+
+## What is NOT done (deferred until approved)
+
+- **Frame re-ingest.** The DB's `frames.pooled_embedding` and `frame_patches` are
+  still from the broken encoder. They must be re-encoded with the fixed loader
+  before any production visual query or `eval_runs` row is trustworthy. Not done
+  this pass — it is a DB write.
+- **Full visual eval headline / `eval_runs` row.** Deferred to after re-ingest.
+- **Phase B reranker, model bakeoff #2.** Out of scope.
+
+## Exact working combination
+
+`vidore/colqwen2.5-v0.2` adapter on `vidore/colqwen2.5-base`, with the
+key-remap + embed_tokens repair in `embed/colqwen.py`, on `transformers 5.9.0` /
+`peft 0.19.1` / `colpali-engine 0.3.16` / `torch 2.11.0`. The fix is in the loader,
+not a version pin — no `uv.lock` change was needed.
