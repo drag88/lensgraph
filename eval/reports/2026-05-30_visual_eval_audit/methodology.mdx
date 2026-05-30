@@ -1,0 +1,113 @@
+# Visual eval — VisualAnswerGrounding audit payload
+
+Date: 2026-05-30. Run id: `visual-eval-13edcf554e60`. Candidate: `colqwen2.5`
+(`vidore/colqwen2.5-base`). `model_candidates.yaml` sha256
+`f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1`. k = 5.
+
+This run re-scores the same substrate as the fixed-loader headline
+(`visual-eval-f90e31495c89`, 2026-05-30) after replacing the bare
+`VisualAnswerGrounding@5` boolean with a structured audit payload. The metric
+logic is unchanged; only the recorded shape changed. The headline numbers
+reproduce exactly, which is the point: a payload change must not move a metric.
+
+## Headline (unchanged from f90e31495c89)
+
+| Metric | Value |
+|---|---|
+| VisualFrameRecall@5 | 0.944 (17/18) |
+| VisualChunkTR@5 | 1.000 (18/18) |
+| AnswerTermHit@5 (text side) | 0.000 (0/10 evaluable) |
+| VisualAnswerGrounding@5 (frame side) | 0.200 (2/10 evaluable, 8 skipped) |
+
+`n = 18` visual_gold examples; 10 carry curator `visual_evidence` and are
+evaluable for the two grounding metrics, 8 do not and are skipped from both.
+
+## What changed
+
+Before this run, a positive grounding row was a single `true` in
+`metrics.visual_answer_grounding_at_k`. There was nothing to spot-check: which
+frame was OCR'd, which slide text it found, which curator term hit — none of it
+was recorded. The 2026-05-28 run scored 0/10, so the gap was harmless then. The
+fixed-loader run scored 2/10, and a positive boolean with no evidence is not a
+methodology claim.
+
+The scalar is now replaced by a JSONB sub-object,
+`metrics.visual_answer_grounding` (dict or `null`), assembled in
+`measure_visual.frame_ocr_grounding_at_k` and persisted by
+`run_visual_eval._write_per_example_results`:
+
+- `passed` — bool. The whole sub-object is `null` for a not-evaluable row (no
+  curator evidence), matching how `answer_term_hit_at_k` carries `null`.
+- `evaluated_frame_ids` / `evaluated_image_paths` — the in-window top-k frames
+  the OCR judge actually ran against (right `video_id`, `frame_sec` inside the
+  gold span ± 10s), index-aligned.
+- `ocr_excerpts` — first 500 chars of OCR per evaluated frame, keyed by frame_id.
+- `matched_term` — the curator term(s) that grounded the pass (joined with
+  ` AND ` across a multi-item conjunction), or `null` on a fail.
+- `failure_reason` — `no_in_window_frame` | `ocr_no_terms_matched` |
+  `row_not_evaluable` (the `null`-sub-object label) | `null` on pass.
+- `judge_kind` — `ocr` today; the field reserves the future VLM-judge path.
+
+The run-level float stays in `eval_runs.summary.visual_answer_grounding_at_k`.
+There is no back-compat shim — the per-row scalar key is gone.
+
+## The two positives, hand-verified
+
+Both VAG positives were spot-checked by opening the named PNG and confirming the
+curator term is literally on the slide. Both survive.
+
+### `visual-required-sally-current-plan-block`
+
+Gold span 314–360s on `aie_sg_2026_d2_arize_alyx`. Two-item curator conjunction
+(`normalize: exact`): item 1 requires one of `Sort LLM spans by latency` /
+`Identify bottlenecks`; item 2 requires `todo_update(id=1, status="completed")`.
+
+- `evaluated_frame_ids`: `[993, 994, 992, 995]` (frame_sec 320/330/310/340 — all
+  inside the window `[304, 370]`).
+- `matched_term`: `Sort LLM spans by latency AND todo_update(id=1, status="completed")`.
+- The pass is driven by frame **995** (`frame_000035.png`, 340s).
+- Hand check: the slide shows `0. [x] Sort LLM spans by latency` and
+  `Call todo_update(id=1, status="completed")`. Confirmed — both terms are on
+  the slide. **Survives.**
+
+One honest caveat worth recording. With `normalize: exact`, item 2 requires a
+straight double quote. Tesseract read the closing quote as a curly `”` on frames
+992/993/994 and as a straight `"` only on 995, so the conjunction passed on a
+single frame out of four near-identical slide captures. The slide genuinely
+renders a straight quote (monospace code), so this is an OCR-fidelity artifact on
+the three misses, not a false positive on 995 — but it shows the exact-match OCR
+gate is one glyph away from flipping. If the grounding rate is ever published as a
+claim, switch this row's quote-bearing term to a `lowercase_collapse_ws` normalize
+or a quote-insensitive variant, or note the fragility next to the number.
+
+### `visual-required-sally-lessons-recoverable-exceptions`
+
+Gold span 590–625s on `aie_sg_2026_d2_arize_alyx`. Single-item conjunction
+(`normalize: exact`): `RecoverableExceptions`.
+
+- `evaluated_frame_ids`: `[1021]` (frame_sec 600 — inside the window `[580, 635]`).
+- `matched_term`: `RecoverableExceptions`.
+- Hand check: the slide (`frame_000061.png`) shows the bullet
+  `RecoverableExceptions create feedback loops`. Confirmed. **Survives.**
+
+## Why AnswerTermHit is 0/10 while grounding is 2/10
+
+The two metrics read different text. AnswerTermHit checks the retrieved chunk's
+*transcript* text; grounding checks the retrieved frame's *OCR* text. The
+curator terms here are slide-only strings (code identifiers, plan checkboxes,
+camelCase names) that the speaker never reads aloud verbatim, so they appear in
+OCR but not in the transcript. That AnswerTermHit is 0 and grounding is 2 is the
+expected signature of slide-bound answers, not a contradiction.
+
+## Reproduce
+
+```bash
+make db-up && make db-migrate
+uv run python -m eval.runners.run_visual_eval     # writes visual-eval-<hex>
+```
+
+Substrate (unchanged from f90e31495c89): 514 / 529 pooled frames, 375,734
+patches across 3 talks. `test_gold.jsonl` was not read. The regression guard for
+the payload shape is `eval/tests/test_measure_visual.py`
+(`frame_ocr_grounding_*`, `_grounding_to_dict`) plus the persisted-shape
+assertion in `eval/tests/test_run_visual_eval.py`.
