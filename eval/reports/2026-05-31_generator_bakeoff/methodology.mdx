@@ -1,0 +1,173 @@
+# Bakeoff #2 — Generator + Judge (PROVISIONAL)
+
+**Run date:** 2026-05-31
+**Run IDs:** `generator-bakeoff-4c0d197cdde9` (gemma-4-31b), `generator-bakeoff-ac902984074e` (qwen3-235b-a22b-instruct)
+**Code path:** `minimal_generation`
+**Component:** `generator`
+**Judge:** `deepseek-v3.2` (constant, cross-family) · prompt `faithfulness_v1.md` sha256 `3fb7316ac981…`
+**Outcome:** ⚠️ **PROVISIONAL — no winner locked.** The judge is not yet kappa-validated, and neither candidate meets all per-component minimums (both fail the p95 latency minimum). No ADR 004 amendment.
+
+## Why this is provisional, not a selection
+
+A generator faithfulness number is only a *claim* once the judge clears
+`cohens_kappa_vs_human_min: 0.60` on a non-empty `boundary_audit.jsonl`
+(`docs/eval-methodology.md` Judge Versioning; CLAUDE.md hard rule 4).
+`boundary_audit.jsonl` is **empty** — Cohen's kappa needs **human** edge/standalone
+labels, which were not produced this session. So:
+
+- The faithfulness numbers below are recorded honestly but are **not validated**.
+- The runner **never calls `lock_bakeoff_winner`** — `load_bakeoff_winner('generator', code_path='minimal_generation')` still returns `None`.
+- **ADR 004 is not amended.**
+
+A second blocker for "Selected" even with a validated judge: the
+`boundary_audit` schema scores the **boundary tier** (`edge_sensibility`,
+`standalone`), while this bakeoff's judge scores the **answer tier**
+(`ClaimsSupported`, `CitationAccuracy`). Kappa on `boundary_audit` validates a
+chunk-boundary judge, not the faithfulness judge used here. Resolving that
+(a separate answer-tier audit set, or a schema extension) is open work.
+
+## Setup
+
+- **Generators scored:** `gemma-4-31b` (google-gemma), `qwen3-235b-a22b-instruct` (alibaba-qwen).
+- **Judge:** a **constant** `deepseek-v3.2` (deepseek family). A constant judge is
+  required to compare generators fairly (no per-run judge swap). Because all three
+  judge candidates share families with the three generators, a constant judge forces
+  excluding the generator of its own family — so **`deepseek-v3.2` is not scored as a
+  generator** under this judge. deepseek is cross-family to both scored generators and
+  to the curation family (`claude-opus-4-7`), satisfying the ADR-004 anti-contamination rule.
+- **Harness:** `minimal_generation` path (one provider call per example, shared
+  `parse_generation_output`). Not the LangGraph product path — its Plan/Verify/Cite
+  stages are confounds for a generator comparison and selection reads only
+  `code_path='minimal_generation'` rows (design §5).
+- **Retrieval:** RRF over the four text channels (bm25 + dense + sparse + multivec),
+  top-8 fed to the generator. Visual + reranker excluded (isolate generator quality;
+  avoid a second local-model load).
+- **Eval sets:** `dev_gold.jsonl` 10 single_clip examples (faithfulness + false
+  refusal); `negative.jsonl` 20 corpus-scope negatives (abstention). `test_gold`,
+  `synthesis` not consulted.
+
+## Metric definition note (ClaimsSupported)
+
+The model never sees gold and its citations index its **own** claims (design §6
+anti-contamination). So the judge measures **`claims_grounded_rate`** — the mean
+fraction of the model's emitted claims that are grounded in the retrieved spans
+(the faithfulness/precision reading of the Answer tier's `ClaimsSupported`), not
+recall against `expected_claims`. The yaml `claims_supported_min` is applied to
+this proxy. The recall-vs-expected-claims axis is deferred.
+
+## Results (n = 10 dev_gold, 20 negatives)
+
+| Metric (minimum) | `gemma-4-31b` | `qwen3-235b-a22b-instruct` |
+|---|---:|---:|
+| `claims_grounded_rate` (≥0.85) | **1.00** ✅ | **1.00** ✅ |
+| `citation_accuracy` (≥0.85) | **1.00** ✅ | **1.00** ✅ |
+| `json_parse_success` (≥0.98) | **1.00** ✅ | **1.00** ✅ |
+| `false_refusal_rate` (dev_gold) | 0.00 | 0.00 |
+| `corpus_negative_refusal` (≥0.90) | 0.85 ❌ | **1.00** ✅ |
+| `p95_latency` (≤2.0s) | 40.7s ❌ | 66.4s ❌ |
+| **Meets all minimums** | **No** | **No** |
+| Price ($/Mtok output) | 0.38 | 0.10 |
+
+**Faithfulness is saturated.** Both models ground every claim and every citation
+(1.00/1.00) on all 10 dev_gold examples. On a 10-example, 3-talk corpus of mostly
+`easy`/`medium` single_clip questions this is a **ceiling effect** — the metric
+does not discriminate here. It needs harder examples and a larger `dev_gold`
+(methodology v0 target ~35) before it separates generators.
+
+**Abstention is the real discriminator.** `qwen3-235b` correctly abstained on all
+20 corpus-negatives. `gemma-4-31b` abstained on 17/20 — it over-reached on three
+out-of-corpus questions:
+
+- `neg-corpus-prompt-injection-defense` — answered "safety should be implemented as
+  wrappers rather than relying on prompts," mis-applying the Arize talk's
+  recoverable-exception wrappers to a prompt-injection question the corpus never covers.
+- `neg-corpus-agent-long-term-memory` — stretched the Alyx "large JSON" *session-state*
+  abstraction into an answer about *cross-session* persistent memory.
+- `neg-corpus-ab-testing-rollout` — a **soft refusal that never set `abstain`**: the
+  prose opens "the provided text does not contain instructions on how to run A/B tests"
+  but then adds tangential content, so the structured `abstain` flag stayed false.
+  This is as much an abstain-contract gap as a model failure — worth tightening in the
+  generate prompt.
+
+**Latency dominates the verdict.** Both candidates blow past the 2.0s p95 minimum by
+20–33×. These are non-streaming calls asking a 31B/235B model to emit a full
+JSON claim/citation decomposition over 8 chunks; tens of seconds is expected at this
+prompt size. The 2.0s minimum looks calibrated for a different assumption (short or
+streamed answers). **Action: revisit `p95_latency_sec_max` for the JSON-decomposition
+harness** (or measure streamed first-token latency separately) before bakeoff #2 is
+re-run for a real selection. Recorded here; not changed in this session.
+
+## Selection rule applied (ADR 004 v3.1) — descriptive only
+
+```
+For component = generator:
+  candidates = { gemma-4-31b, qwen3-235b-a22b-instruct }   # deepseek excluded (judge family)
+  minimums met by gemma  = No  (p95 latency, corpus_negative_refusal)
+  minimums met by qwen   = No  (p95 latency)
+  qualifying = { }  →  NO winner
+```
+
+Had the (likely-miscalibrated) latency minimum been met, the rule would point at
+`qwen3-235b-a22b-instruct`: it ties gemma on faithfulness (1.00/1.00), beats it on
+refusal (1.00 vs 0.85), and is **~3.8× cheaper on output tokens** ($0.10 vs $0.38 /Mtok).
+That is a directional read, **not a selection** — both the unvalidated judge and the
+unmet latency minimum forbid locking it.
+
+## Cost differential
+
+| Candidate | $/Mtok in | $/Mtok out | Family |
+|---|---:|---:|---|
+| `gemma-4-31b` | 0.13 | 0.38 | google-gemma |
+| `qwen3-235b-a22b-instruct` | 0.071 | 0.10 | alibaba-qwen |
+| `deepseek-v3.2` (judge) | 0.32 | 0.89 | deepseek |
+
+The selection score axis (when valid) is `claims_grounded_rate`; the tie-break is
+output price. qwen is both the cheaper and the stronger-abstaining candidate here.
+
+## Reproducibility
+
+```bash
+make db-up
+set -a && . ./.env && set +a          # DEEPINFRA_API_KEY
+uv run python -m scripts.run_generator_bakeoff
+#  → 2 generator-bakeoff rows written; NO winner locked (provisional)
+
+# Inspect a run
+psql lensgraph -c "
+  SELECT generator_model_id, judge_model_id,
+         summary->>'corpus_negative_refusal' AS neg_refusal,
+         summary->>'claims_grounded_rate'    AS claims,
+         summary->>'p95_latency_ms'          AS p95_ms,
+         summary->>'meets_minimums'          AS meets
+    FROM eval_runs
+   WHERE summary->>'code' = 'generator_bakeoff'
+   ORDER BY created_at DESC;"
+```
+
+## Inputs
+
+- **Candidate yaml SHA256:** `f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1`
+- **Judge prompt:** `eval/runners/judges/faithfulness_v1.md`, sha256 `3fb7316ac981…` (logged in every run's `summary.judge_prompt_sha256`)
+- **dev_gold:** 10 single_clip examples. **negatives:** 20 corpus-scope.
+- **Code paths:** `scripts/run_generator_bakeoff.py` → `eval/runners/measure_generation.py` → `eval/runners/{providers,minimal_generation}.py` + `retrieve/{bm25,dense,sparse,multivec,rrf}.py`.
+
+## What this does NOT tell us
+
+- **A validated faithfulness number.** Needs human `boundary_audit` labels → judge↔human
+  kappa ≥ 0.60. And the tier mismatch (boundary-tier audit vs answer-tier judge) must be resolved.
+- **Generator separation on faithfulness.** Saturated at 1.00/1.00 on 10 easy examples.
+  Grow `dev_gold` and add `hard` examples before re-running.
+- **A real latency verdict.** The 2.0s minimum is almost certainly mis-scoped for the
+  non-streaming JSON-decomposition harness.
+
+## Decision
+
+**No winner. Provisional.** No `lock_bakeoff_winner`, no ADR 004 amendment.
+
+Next, in order, before bakeoff #2 can select:
+1. Curate `boundary_audit.jsonl` with **human** edge/standalone labels (≥20 rows) and
+   resolve the answer-tier-vs-boundary-tier mismatch, then compute judge↔human kappa.
+2. Recalibrate `p95_latency_sec_max` for the JSON-decomposition harness (or measure
+   streamed first-token latency).
+3. Grow `dev_gold` and add `hard` examples so faithfulness stops saturating.
+4. Re-run; if the judge is valid and minimums are met, lock the winner and amend ADR 004.

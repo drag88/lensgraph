@@ -1,0 +1,80 @@
+{
+  "bakeoff": "generator",
+  "run_date": "2026-05-31",
+  "provisional": true,
+  "provisional_reason": "judge not kappa-validated (boundary_audit.jsonl empty)",
+  "judge_id": "deepseek-v3.2",
+  "judge_prompt_hash": "3fb7316ac981c63f277c23b668f9d7fecbe234be9a05e6b75dfdc73caba815ee",
+  "candidate_set_yaml_sha256": "f8133261bf3517ffcae208820ba813856ce560cafdddea49a216df86001999a1",
+  "generators_excluded": {
+    "deepseek-v3.2": "shares family with the constant judge"
+  },
+  "runs": {
+    "generator-bakeoff-4c0d197cdde9": {
+      "generator": "gemma-4-31b",
+      "judge": "deepseek-v3.2",
+      "judge_prompt_hash": "3fb7316ac981c63f277c23b668f9d7fecbe234be9a05e6b75dfdc73caba815ee",
+      "summary": {
+        "code": "generator_bakeoff",
+        "judge_id": "deepseek-v3.2",
+        "component": "generator",
+        "n_dev_gold": 10,
+        "n_negatives": 20,
+        "provisional": true,
+        "candidate_id": "gemma-4-31b",
+        "judge_failures": 0,
+        "meets_minimums": false,
+        "minimum_checks": {
+          "p95_latency_sec_max": false,
+          "claims_supported_min": true,
+          "citation_accuracy_min": true,
+          "json_parse_success_min": true,
+          "corpus_negative_refusal_min": false
+        },
+        "p95_latency_ms": 40714,
+        "citation_accuracy": 1.0,
+        "false_refusal_rate": 0.0,
+        "json_parse_success": 1.0,
+        "provisional_reason": "judge not kappa-validated (boundary_audit.jsonl empty)",
+        "judge_prompt_sha256": "3fb7316ac981c63f277c23b668f9d7fecbe234be9a05e6b75dfdc73caba815ee",
+        "claims_grounded_rate": 1.0,
+        "corpus_negative_refusal": 0.85,
+        "n_judged_claims_examples": 10,
+        "n_judged_citation_examples": 10
+      }
+    },
+    "generator-bakeoff-ac902984074e": {
+      "generator": "qwen3-235b-a22b-instruct",
+      "judge": "deepseek-v3.2",
+      "judge_prompt_hash": "3fb7316ac981c63f277c23b668f9d7fecbe234be9a05e6b75dfdc73caba815ee",
+      "summary": {
+        "code": "generator_bakeoff",
+        "judge_id": "deepseek-v3.2",
+        "component": "generator",
+        "n_dev_gold": 10,
+        "n_negatives": 20,
+        "provisional": true,
+        "candidate_id": "qwen3-235b-a22b-instruct",
+        "judge_failures": 0,
+        "meets_minimums": false,
+        "minimum_checks": {
+          "p95_latency_sec_max": false,
+          "claims_supported_min": true,
+          "citation_accuracy_min": true,
+          "json_parse_success_min": true,
+          "corpus_negative_refusal_min": true
+        },
+        "p95_latency_ms": 66414,
+        "citation_accuracy": 1.0,
+        "false_refusal_rate": 0.0,
+        "json_parse_success": 1.0,
+        "provisional_reason": "judge not kappa-validated (boundary_audit.jsonl empty)",
+        "judge_prompt_sha256": "3fb7316ac981c63f277c23b668f9d7fecbe234be9a05e6b75dfdc73caba815ee",
+        "claims_grounded_rate": 1.0,
+        "corpus_negative_refusal": 1.0,
+        "n_judged_claims_examples": 10,
+        "n_judged_citation_examples": 10
+      }
+    }
+  }
+}
