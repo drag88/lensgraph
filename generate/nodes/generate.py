@@ -26,10 +26,7 @@ _TIMEOUT_SEC = 90.0
 def _format_chunks(chunks: list) -> str:
     parts: list[str] = []
     for i, c in enumerate(chunks):
-        parts.append(
-            f"[{i + 1}] [{c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f}]\n"
-            f"{c.text}"
-        )
+        parts.append(f"[{i + 1}] [{c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f}]\n{c.text}")
     return "\n\n".join(parts)
 
 
@@ -53,10 +50,7 @@ def _prompt(query: str, chunks: list) -> list[dict]:
         '"end_sec": <float>, "answer_claim_index": <int>}, ...], '
         '"abstain": <bool>}'
     )
-    user = (
-        f"User query: {query!r}\n\nChunks:\n{_format_chunks(chunks)}\n\n"
-        "Answer now."
-    )
+    user = f"User query: {query!r}\n\nChunks:\n{_format_chunks(chunks)}\n\nAnswer now."
     return [
         {"role": "system", "content": sys},
         {"role": "user", "content": user},

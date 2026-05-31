@@ -71,8 +71,7 @@ Each claim is an OBJECT with a "text" string field (not a bare string). Every cl
 
 def _build_prompt(query: str, chunks: list[RetrievedChunkLite]) -> list[dict]:
     rendered = "\n\n".join(
-        f"[{c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f}] {c.text}"
-        for c in chunks
+        f"[{c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f}] {c.text}" for c in chunks
     )
     user = f"Question: {query}\n\nChunks:\n{rendered}"
     return [

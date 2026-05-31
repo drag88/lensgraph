@@ -35,10 +35,7 @@ def _format_chunks(chunks: list) -> str:
     """Inline the top-3 chunks with ``[video_id @ s.s-e.e]`` labels."""
     parts: list[str] = []
     for i, c in enumerate(chunks):
-        parts.append(
-            f"[{i + 1}] [{c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f}]\n"
-            f"{c.text}"
-        )
+        parts.append(f"[{i + 1}] [{c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f}]\n{c.text}")
     return "\n\n".join(parts)
 
 
@@ -54,10 +51,7 @@ def _judge_prompt(query: str, top3: list) -> list[dict]:
         '"refined_query": "<query rewrite or empty string>"}\n'
         "confidence > 0.6 means 'yes, generate'; <= 0.6 means 'no, refine'."
     )
-    user = (
-        f"User query: {query!r}\n\nTop chunks:\n{_format_chunks(top3)}\n\n"
-        "Score now."
-    )
+    user = f"User query: {query!r}\n\nTop chunks:\n{_format_chunks(top3)}\n\nScore now."
     return [
         {"role": "system", "content": sys},
         {"role": "user", "content": user},

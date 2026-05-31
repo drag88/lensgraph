@@ -139,6 +139,4 @@ def parse_generation_output(raw_str: str) -> GenerationOutput:
 
     # model_validate may have copied default parse_ok/raw_response from the
     # payload if the model emitted them. Overwrite — these are parser-owned.
-    return model.model_copy(
-        update={"parse_ok": True, "raw_response": raw_str, "error": None}
-    )
+    return model.model_copy(update={"parse_ok": True, "raw_response": raw_str, "error": None})

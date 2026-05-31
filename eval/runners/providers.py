@@ -63,15 +63,11 @@ def _lookup_option(candidate_id: str, *, component: str) -> dict:
     try:
         options = raw["candidates"][component]["options"]
     except KeyError as e:
-        raise KeyError(
-            f"candidates.{component}.options missing from model_candidates.yaml"
-        ) from e
+        raise KeyError(f"candidates.{component}.options missing from model_candidates.yaml") from e
     for opt in options:
         if opt.get("id") == candidate_id:
             return opt
-    raise KeyError(
-        f"candidate_id={candidate_id!r} not found in candidates.{component}.options"
-    )
+    raise KeyError(f"candidate_id={candidate_id!r} not found in candidates.{component}.options")
 
 
 def _resolve_provider_model_id(candidate_id: str, *, component: str) -> str:
@@ -104,9 +100,7 @@ def _read_api_key() -> str:
     var name. Missing and empty are both errors."""
     key = os.environ.get("DEEPINFRA_API_KEY", "")
     if not key:
-        raise ProviderError(
-            "DEEPINFRA_API_KEY is missing or empty in the environment"
-        )
+        raise ProviderError("DEEPINFRA_API_KEY is missing or empty in the environment")
     return key
 
 
@@ -203,9 +197,7 @@ def chat_completion(
                     body = response.json()
                     content = body["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, ValueError, TypeError) as e:
-                    raise ProviderError(
-                        f"malformed 200 response: {type(e).__name__}"
-                    ) from e
+                    raise ProviderError(f"malformed 200 response: {type(e).__name__}") from e
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
                 return ProviderResponse(
                     raw_text=content,
@@ -225,8 +217,7 @@ def chat_completion(
             # response body verbatim (it may echo back the auth header
             # in some provider implementations).
             raise ProviderError(
-                f"DeepInfra returned non-retryable status {status} "
-                f"(candidate_id={candidate_id})"
+                f"DeepInfra returned non-retryable status {status} (candidate_id={candidate_id})"
             )
 
         raise ProviderError(

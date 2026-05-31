@@ -102,10 +102,7 @@ def _validate_one(
             ),
             None,
         )
-    reason = (
-        f"no chunk with >=50% overlap on video_id={cit.video_id} "
-        f"(best ratio={best_ratio:.2f})"
-    )
+    reason = f"no chunk with >=50% overlap on video_id={cit.video_id} (best ratio={best_ratio:.2f})"
     return (
         None,
         InvalidCitation(

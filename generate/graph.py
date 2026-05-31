@@ -68,6 +68,7 @@ def build_graph(*, conn, span_buffer: list[dict]):
     ``span_buffer`` collects span dicts across the run for the
     post-graph flush in ``api.answer``.
     """
+
     # Nodes that need conn: retrieve, rerank, verify.
     def _retrieve(state: AgentState) -> AgentState:
         return retrieve_mod.retrieve(state, conn=conn)

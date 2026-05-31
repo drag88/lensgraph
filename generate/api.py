@@ -98,12 +98,8 @@ def _cross_family_message(
     generator_explicit: bool,
     judge_explicit: bool,
 ) -> str:
-    explicit_label = (
-        "explicit" if generator_explicit else "auto-resolved from bakeoff winner"
-    )
-    judge_label = (
-        "explicit" if judge_explicit else "auto-resolved from bakeoff winner"
-    )
+    explicit_label = "explicit" if generator_explicit else "auto-resolved from bakeoff winner"
+    judge_label = "explicit" if judge_explicit else "auto-resolved from bakeoff winner"
     # Pick a corrective: ask the user to override the auto-resolved side
     # (or, if both are explicit, the judge by convention).
     if generator_explicit and not judge_explicit:
@@ -116,7 +112,7 @@ def _cross_family_message(
         f"CrossFamilyViolationError: judge family {judge.family!r} ({judge_label}) "
         f"shares family with generator {generator.candidate_id!r} ({explicit_label}). "
         "ADR 004 v3.1 requires cross-family judging.\n\n"
-        f"    make answer QUERY=\"...\" {fix_hint}"
+        f'    make answer QUERY="..." {fix_hint}'
     )
 
 
@@ -137,21 +133,15 @@ def _resolve_generator(
             conn, component="generator", code_path="minimal_generation"
         )
     if candidate_id is None:
-        raise BakeoffNotYetRunError(
-            _bakeoff_not_yet_run_message("generator", corpus_id)
-        )
+        raise BakeoffNotYetRunError(_bakeoff_not_yet_run_message("generator", corpus_id))
     return (
         GeneratorCandidate(
             candidate_id=candidate_id,
             provider_model_id=providers._resolve_provider_model_id(
                 candidate_id, component="generator"
             ),
-            family=providers._resolve_candidate_family(
-                candidate_id, component="generator"
-            ),
-            provider=providers._resolve_candidate_provider(
-                candidate_id, component="generator"
-            ),
+            family=providers._resolve_candidate_family(candidate_id, component="generator"),
+            provider=providers._resolve_candidate_provider(candidate_id, component="generator"),
         ),
         explicit,
     )
@@ -171,21 +161,13 @@ def _resolve_judge(
             conn, component="judge", code_path="minimal_generation"
         )
     if candidate_id is None:
-        raise BakeoffNotYetRunError(
-            _bakeoff_not_yet_run_message("judge", corpus_id)
-        )
+        raise BakeoffNotYetRunError(_bakeoff_not_yet_run_message("judge", corpus_id))
     return (
         JudgeCandidate(
             candidate_id=candidate_id,
-            provider_model_id=providers._resolve_provider_model_id(
-                candidate_id, component="judge"
-            ),
-            family=providers._resolve_candidate_family(
-                candidate_id, component="judge"
-            ),
-            provider=providers._resolve_candidate_provider(
-                candidate_id, component="judge"
-            ),
+            provider_model_id=providers._resolve_provider_model_id(candidate_id, component="judge"),
+            family=providers._resolve_candidate_family(candidate_id, component="judge"),
+            provider=providers._resolve_candidate_provider(candidate_id, component="judge"),
         ),
         explicit,
     )
@@ -204,12 +186,8 @@ def _resolve_planner(
         provider_model_id=providers._resolve_provider_model_id(
             candidate_id, component="cheap_extraction"
         ),
-        family=providers._resolve_candidate_family(
-            candidate_id, component="cheap_extraction"
-        ),
-        provider=providers._resolve_candidate_provider(
-            candidate_id, component="cheap_extraction"
-        ),
+        family=providers._resolve_candidate_family(candidate_id, component="cheap_extraction"),
+        provider=providers._resolve_candidate_provider(candidate_id, component="cheap_extraction"),
     )
 
 
@@ -332,17 +310,11 @@ def _print_result(result: AnswerResult) -> None:
     print()
     print(f"valid_citations ({len(result.valid_citations)}):")
     for c in result.valid_citations:
-        print(
-            f"  - {c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f} "
-            f"→ chunk {c.matched_chunk_id}"
-        )
+        print(f"  - {c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f} → chunk {c.matched_chunk_id}")
     if result.invalid_citations:
         print(f"invalid_citations ({len(result.invalid_citations)}):")
         for c in result.invalid_citations:
-            print(
-                f"  - {c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f} "
-                f"({c.reason})"
-            )
+            print(f"  - {c.video_id} @ {c.start_sec:.1f}-{c.end_sec:.1f} ({c.reason})")
 
 
 def _cli() -> int:
