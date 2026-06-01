@@ -1,0 +1,104 @@
+ Use TeamCreate, not subagents.
+
+  Priority change: visual eval is now the blocker. Do not start generator + judge comparison / Bakeoff #2.
+
+  Current HEAD: 2754167.
+
+  Goal: make visual retrieval eval actually correct and answer-grounded. We need to prove whether the retrieved video frames contain the answer-bearing visual evidence, not just whether transcript chunks overlap the right time window.
+
+  Use TeamCreate to spin up a parallel agent team. Do NOT use subagents.
+
+  Team plan:
+
+  Agent A — Visual answer-grounding metric
+  - Own files:
+    - eval/runners/measure_visual.py
+    - eval/runners/run_visual_eval.py
+    - eval/tests/test_measure_visual.py
+    - eval/tests/test_run_visual_eval.py
+    - eval/schemas/gold_example.schema.json if needed
+  - Task:
+    - Add a real frame-side visual answer metric.
+    - Preferred first path: OCR retrieved frames and compare against visual_evidence.required_any.
+    - If OCR is not viable, propose a visual-judge path with logged outputs.
+    - Keep current AnswerTermHit@k as text-side only.
+    - New metric should clearly distinguish:
+      - right frame/window retrieved
+      - retrieved frame contains answer evidence
+      - text-only transcript chunk contains answer terms
+
+  Agent B — Frame extraction / 360p vs 720p drift
+  - Own files:
+    - ingest/frames.py
+    - scripts/fetch_video.py if needed
+    - docs/decisions/005-chapter-slice-ingest.md if behavior changes
+    - eval/tests around frame extraction if present
+  - Task:
+    - Find why sampled frames are 360p instead of intended 720p.
+    - Fix extraction if the design intent is 720p.
+    - Re-ingest current visual videos if needed.
+    - Report exact before/after frame dimensions and counts.
+
+  Agent C — Retrieval ranking diagnosis + ablations
+  - Own files:
+    - retrieve/visual.py
+    - eval/reports/2026-05-28_visual_diagnostics/*
+    - new eval report folder if needed
+  - Task:
+    - Diagnose stage-1 prefilter misses.
+    - Run prefilter_k ablations: 200, 500, maybe 1000.
+    - Diagnose MaxSim stage-3 demotions.
+    - Report per-example failure reason:
+      - gold frame absent from prefilter
+      - gold frame present but patch/MaxSim demoted
+      - frame hit but answer evidence missing
+      - text-only retrieved but visual did not help
+
+  Agent D — Eval integrity + reporting
+  - Own files:
+    - eval/reports/<new_visual_eval_report>/*
+    - dev/active/phase-2-week-7/handoff.md
+  - Task:
+    - Keep methodology honest.
+    - Ensure all eval runs write aggregate rows to eval_runs and per-example rows to eval_results.
+    - Ensure reports do not claim visual grounding unless the frame-side metric proves it.
+    - Prepare final summary with exact commands, run IDs, metrics, and remaining blockers.
+
+  Shared reading order:
+  1. dev/active/phase-2-week-7/handoff.md
+  2. eval/reports/2026-05-28_visual_eval_v2/methodology.mdx
+  3. eval/reports/2026-05-28_visual_diagnostics/report.md
+  4. eval/runners/measure_visual.py
+  5. eval/runners/run_visual_eval.py
+  6. ingest/frames.py
+  7. retrieve/visual.py
+  8. docs/decisions/005-chapter-slice-ingest.md
+
+  Hard rules:
+  - Do not start generator + judge comparison.
+  - Do not touch test_gold.
+  - Do not change model candidates unless the eval proves ColQwen cannot be made good enough and you propose that explicitly.
+  - Keep unrelated Claude/agent/cursor/prompt files out of commits.
+  - No AI attribution in commits or docs.
+  - All claims must be backed by eval output, per-example reports, or tests.
+
+  Required gates:
+  make validate-evals-strict
+  make phase0-gate
+  make test
+  make lint
+  uv run pytest -m slow eval/tests/test_run_visual_eval.py
+
+  Stop condition:
+  Visual eval is considered closed only if one of these is true:
+  1. We have a real frame-side visual answer-grounding metric and visual-required examples show strong performance, with per-example evidence.
+  2. Or we have a defensible failure report showing exactly why visual retrieval is blocked, with the next concrete fix identified.
+
+  Final response format:
+  - TeamCreate roster and ownership
+  - Commits made
+  - Exact visual metrics before/after
+  - Per-example failure summary
+  - Gates run and pass/fail
+  - Postgres stopped confirmation
+  - Clear recommendation: proceed, keep fixing visual, or change visual strategy
