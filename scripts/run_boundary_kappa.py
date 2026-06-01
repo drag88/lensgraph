@@ -42,8 +42,6 @@ import re
 import sys
 from pathlib import Path
 
-from sklearn.metrics import cohen_kappa_score
-
 from eval.runners import providers
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -104,6 +102,43 @@ def binarize(score: int, *, threshold: int = _CLEAN_THRESHOLD) -> int:
     return 1 if score >= threshold else 0
 
 
+def cohens_kappa(
+    a: list[int], b: list[int], *, labels: list[int], weights: str | None = None
+) -> float:
+    """Cohen's kappa, matching ``sklearn.metrics.cohen_kappa_score``.
+
+    ``weights``: ``None`` (unweighted — 0 on the diagonal, 1 off), ``"linear"``
+    (``|i-j|``), or ``"quadratic"`` (``(i-j)**2``) over the ordinal ``labels``.
+
+    Formula (sklearn): with confusion matrix ``C`` (rows=a, cols=b), per-label
+    column sums ``c`` and row sums ``r`` over ``N`` pairs, expected
+    ``E[i][j] = c[i]*r[j]/N``, and weight matrix ``w``:
+    ``kappa = 1 - sum(w*C) / sum(w*E)``. Returns ``0.0`` when the weighted
+    expected agreement is zero (degenerate single-category case)."""
+    n = len(labels)
+    idx = {v: i for i, v in enumerate(labels)}
+    conf = [[0] * n for _ in range(n)]
+    for x, y in zip(a, b, strict=True):
+        conf[idx[x]][idx[y]] += 1
+    total = sum(sum(row) for row in conf)
+    col = [sum(conf[i][j] for i in range(n)) for j in range(n)]
+    row = [sum(conf[i][j] for j in range(n)) for i in range(n)]
+    expected = [[col[i] * row[j] / total for j in range(n)] for i in range(n)]
+    if weights is None:
+        w = [[0 if i == j else 1 for j in range(n)] for i in range(n)]
+    elif weights == "linear":
+        w = [[abs(i - j) for j in range(n)] for i in range(n)]
+    elif weights == "quadratic":
+        w = [[(i - j) ** 2 for j in range(n)] for i in range(n)]
+    else:
+        raise ValueError(f"unknown weights: {weights!r}")
+    num = sum(w[i][j] * conf[i][j] for i in range(n) for j in range(n))
+    den = sum(w[i][j] * expected[i][j] for i in range(n) for j in range(n))
+    if den == 0:
+        return 0.0
+    return 1 - num / den
+
+
 def kappa_set(human: list[int], judge: list[int]) -> dict:
     """Linear, quadratic-weighted, and binarized Cohen's kappa for one paired
     ordinal set. Returns floats rounded to 3 dp plus the pair count. Weighted
@@ -116,11 +151,11 @@ def kappa_set(human: list[int], judge: list[int]) -> dict:
     jb = [binarize(s) for s in judge]
     return {
         "n": len(human),
-        "linear": round(cohen_kappa_score(human, judge, labels=_SCORE_LABELS, weights="linear"), 3),
+        "linear": round(cohens_kappa(human, judge, labels=_SCORE_LABELS, weights="linear"), 3),
         "quadratic": round(
-            cohen_kappa_score(human, judge, labels=_SCORE_LABELS, weights="quadratic"), 3
+            cohens_kappa(human, judge, labels=_SCORE_LABELS, weights="quadratic"), 3
         ),
-        "binarized": round(cohen_kappa_score(hb, jb, labels=[0, 1]), 3),
+        "binarized": round(cohens_kappa(hb, jb, labels=[0, 1]), 3),
     }
 
 

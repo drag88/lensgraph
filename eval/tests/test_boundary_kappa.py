@@ -7,6 +7,7 @@ import pytest
 from scripts.run_boundary_kappa import (
     binarize,
     build_messages,
+    cohens_kappa,
     content_sha,
     kappa_set,
     parse_judge_scores,
@@ -104,3 +105,29 @@ def test_kappa_uniform_human_collapses():
     # This is the standalone failure mode the variance fix addresses.
     k = kappa_set([3, 3, 3, 3], [3, 4, 2, 5])
     assert k["linear"] == pytest.approx(0.0) or k["linear"] is not None
+
+
+def test_kappa_mixed_pins_all_three_weights():
+    # Non-perfect, mixed-label pair. Values verified equal to
+    # sklearn.metrics.cohen_kappa_score (max abs diff < 1e-15) before sklearn
+    # was removed, so this pins the hand-rolled helper to sklearn's output.
+    human = [1, 2, 3, 4, 5, 3, 3]
+    judge = [2, 2, 3, 5, 5, 4, 1]
+    k = kappa_set(human, judge)
+    assert k["n"] == 7
+    assert k["linear"] == pytest.approx(0.533, abs=5e-4)
+    assert k["quadratic"] == pytest.approx(0.72, abs=5e-4)
+    # binarized (>=4 clean): hb=[0,0,0,1,1,0,0] vs jb=[0,0,0,1,1,1,0]
+    assert k["binarized"] == pytest.approx(0.696, abs=5e-4)
+
+
+def test_cohens_kappa_unweighted_matches_known_value():
+    # Direct helper check on the binarized label set [0,1].
+    hb = [0, 0, 0, 1, 1, 0, 0]
+    jb = [0, 0, 0, 1, 1, 1, 0]
+    assert cohens_kappa(hb, jb, labels=[0, 1]) == pytest.approx(0.696, abs=5e-4)
+
+
+def test_cohens_kappa_rejects_unknown_weights():
+    with pytest.raises(ValueError):
+        cohens_kappa([1, 2], [1, 2], labels=[1, 2], weights="cubic")
