@@ -222,7 +222,14 @@ def _parse_judge_output(raw: str, *, n_claims: int, n_citations: int) -> JudgeRe
     unseen index to ``False`` (an unscored claim is not credited). A
     malformed judge response sets ``judge_parse_ok=False`` and yields
     empty lists — the caller excludes that example from the aggregate and
-    counts it as a judge failure."""
+    counts it as a judge failure.
+
+    STRICT boolean policy: only a JSON literal ``true`` (Python ``True``)
+    credits a claim/citation. Any other value — ``false``, the strings
+    ``"true"``/``"false"``, ``1``/``0``, ``null``, or a missing key —
+    yields NO credit (the entry stays ``False``). This can deflate a
+    score but can NEVER inflate it, so a judge that emits stringified
+    booleans cannot silently lift faithfulness above its true value."""
     text = raw.strip()
     if text.startswith("```"):
         # strip a single fence
@@ -243,7 +250,8 @@ def _parse_judge_output(raw: str, *, n_claims: int, n_citations: int) -> JudgeRe
         except (KeyError, TypeError, ValueError):
             continue
         if 0 <= idx < n_claims:
-            supported[idx] = bool(a.get("supported"))
+            # Strict: only JSON literal ``true`` credits. "true"/1/0 do not.
+            supported[idx] = a.get("supported") is True
 
     accurate = [False] * n_citations
     for a in obj.get("citation_assessments", []) or []:
@@ -252,7 +260,8 @@ def _parse_judge_output(raw: str, *, n_claims: int, n_citations: int) -> JudgeRe
         except (KeyError, TypeError, ValueError):
             continue
         if 0 <= idx < n_citations:
-            accurate[idx] = bool(a.get("accurate"))
+            # Strict: only JSON literal ``true`` credits. "true"/1/0 do not.
+            accurate[idx] = a.get("accurate") is True
 
     return JudgeResult(
         judge_parse_ok=True,

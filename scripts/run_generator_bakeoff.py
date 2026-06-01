@@ -73,6 +73,12 @@ def check_minimums(gen_summary: dict, neg_summary: dict, mins: dict) -> tuple[bo
     def _le(val, threshold) -> bool:
         return val is not None and float(val) <= float(threshold)
 
+    # Missing/None p95 must FAIL the latency minimum — a generator we could
+    # not time is not one we can certify under 2s. Do NOT coerce None to 0
+    # (that would silently pass an untimed candidate).
+    p95_ms = gen_summary.get("p95_latency_ms")
+    p95_sec = p95_ms / 1000.0 if p95_ms is not None else None
+
     checks = {
         "claims_supported_min": _ge(
             gen_summary.get("claims_grounded_rate"), mins["claims_supported_min"]
@@ -86,9 +92,7 @@ def check_minimums(gen_summary: dict, neg_summary: dict, mins: dict) -> tuple[bo
         "corpus_negative_refusal_min": _ge(
             neg_summary.get("corpus_negative_refusal"), mins["corpus_negative_refusal_min"]
         ),
-        "p95_latency_sec_max": _le(
-            (gen_summary.get("p95_latency_ms") or 0) / 1000.0, mins["p95_latency_sec_max"]
-        ),
+        "p95_latency_sec_max": _le(p95_sec, mins["p95_latency_sec_max"]),
     }
     return all(checks.values()), checks
 

@@ -263,6 +263,34 @@ def test_minimums_none_score_is_miss():
     assert checks["claims_supported_min"] is False
 
 
+def test_minimums_none_latency_fails():
+    # A generator we could not time must FAIL the latency minimum, never
+    # silently pass via a 0ms coercion.
+    gen = {
+        "claims_grounded_rate": 0.95,
+        "citation_accuracy": 0.95,
+        "json_parse_success": 1.0,
+        "p95_latency_ms": None,
+    }
+    neg = {"corpus_negative_refusal": 0.95}
+    met, checks = check_minimums(gen, neg, _MINS)
+    assert met is False
+    assert checks["p95_latency_sec_max"] is False
+
+
+def test_minimums_missing_latency_key_fails():
+    gen = {
+        "claims_grounded_rate": 0.95,
+        "citation_accuracy": 0.95,
+        "json_parse_success": 1.0,
+        # p95_latency_ms absent entirely
+    }
+    neg = {"corpus_negative_refusal": 0.95}
+    met, checks = check_minimums(gen, neg, _MINS)
+    assert met is False
+    assert checks["p95_latency_sec_max"] is False
+
+
 # ---- judge output parsing ------------------------------------------------
 
 
@@ -296,6 +324,38 @@ def test_parse_judge_out_of_range_index_defaults_false():
     raw = '{"claim_assessments": [{"claim_index": 0, "supported": true}, {"claim_index": 5, "supported": true}], "citation_assessments": []}'
     r = _parse_judge_output(raw, n_claims=2, n_citations=0)
     assert r.claim_supported == [True, False]
+
+
+def test_parse_judge_string_true_gets_no_credit():
+    # Stringified booleans must NOT inflate: "true"/"false" both → no credit.
+    raw = (
+        '{"claim_assessments": [{"claim_index": 0, "supported": "true"},'
+        '{"claim_index": 1, "supported": "false"}],'
+        '"citation_assessments": [{"citation_index": 0, "accurate": "true"}]}'
+    )
+    r = _parse_judge_output(raw, n_claims=2, n_citations=1)
+    # JSON parsed fine, so the response is "ok", but stringy values credit nothing.
+    assert r.judge_parse_ok is True
+    assert r.claim_supported == [False, False]
+    assert r.citation_accurate == [False]
+
+
+def test_parse_judge_numeric_truthy_gets_no_credit():
+    # 1/0 are not JSON booleans → no credit (1 must not be coerced to True).
+    raw = (
+        '{"claim_assessments": [{"claim_index": 0, "supported": 1},'
+        '{"claim_index": 1, "supported": 0}],'
+        '"citation_assessments": []}'
+    )
+    r = _parse_judge_output(raw, n_claims=2, n_citations=0)
+    assert r.claim_supported == [False, False]
+
+
+def test_parse_judge_literal_false_stays_false():
+    # Sanity: a genuine literal false stays false (no double-negation bug).
+    raw = '{"claim_assessments": [{"claim_index": 0, "supported": false}], "citation_assessments": []}'
+    r = _parse_judge_output(raw, n_claims=1, n_citations=0)
+    assert r.claim_supported == [False]
 
 
 # ---- p95 -----------------------------------------------------------------
