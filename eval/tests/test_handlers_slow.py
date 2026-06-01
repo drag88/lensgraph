@@ -239,6 +239,34 @@ def test_chunk_handler_retry_does_not_duplicate_chunks(conn, tmp_path):
     assert second_count == first_count
 
 
+def test_chunk_handler_strategy_param_writes_coexisting_rows(conn, tmp_path):
+    """The chunking ablation relies on chunk_handler's ``strategy`` payload key.
+    Default = fixed_window (production); an explicit ``transcript_segment`` run
+    writes a second set of rows that coexist (chunks natural key includes
+    chunking_strategy). Production messages omit the key and stay fixed_window."""
+    vtt = _make_vtt(tmp_path)
+    upsert_talk(conn, _make_talk("vid-strat", vtt))
+
+    # default payload -> fixed_window
+    handlers.chunk_handler(conn, {"video_id": "vid-strat", "step": "chunk", "entity_id": 0})
+    # explicit transcript_segment -> coexisting rows
+    handlers.chunk_handler(
+        conn,
+        {"video_id": "vid-strat", "step": "chunk", "entity_id": 0, "strategy": "transcript_segment"},
+    )
+
+    by_strategy = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT chunking_strategy, count(*) FROM chunks WHERE video_id='vid-strat' "
+            "GROUP BY chunking_strategy"
+        ).fetchall()
+    }
+    assert set(by_strategy) == {"fixed_window", "transcript_segment"}
+    assert by_strategy["fixed_window"] >= 1
+    assert by_strategy["transcript_segment"] >= 1
+
+
 def test_handler_crash_rolls_back_chunks_and_status(conn, tmp_path, monkeypatch):
     """If the handler raises mid-flight, process_one's caller transaction
     rolls back: no chunks row, status row reverted to pre-claim state, and
@@ -574,9 +602,7 @@ def _make_real_png(tmp_path: Path, color: tuple[int, int, int] = (200, 100, 50))
     return p
 
 
-def test_embed_frames_handler_end_to_end_writes_pooled_and_patches(
-    conn, tmp_path
-):
+def test_embed_frames_handler_end_to_end_writes_pooled_and_patches(conn, tmp_path):
     """Seed a frame row, enqueue ingest_embed_frames, run process_one with
     embed_frames_handler. ColQwen loads once per module (cached weights);
     assertions:
@@ -598,9 +624,7 @@ def test_embed_frames_handler_end_to_end_writes_pooled_and_patches(
     )
 
     with conn.transaction():
-        processed = workers.process_one(
-            conn, "ingest_embed_frames", handlers.embed_frames_handler
-        )
+        processed = workers.process_one(conn, "ingest_embed_frames", handlers.embed_frames_handler)
     assert processed is True
 
     register_vector(conn)
@@ -611,8 +635,7 @@ def test_embed_frames_handler_end_to_end_writes_pooled_and_patches(
     assert pooled.shape == (128,)
 
     patch_rows = conn.execute(
-        "SELECT patch_index, embedding FROM frame_patches "
-        "WHERE frame_id = %s ORDER BY patch_index",
+        "SELECT patch_index, embedding FROM frame_patches WHERE frame_id = %s ORDER BY patch_index",
         (fid,),
     ).fetchall()
     assert len(patch_rows) > 0
@@ -675,9 +698,7 @@ def test_embed_frames_handler_crash_rolls_back_patches_pooled_and_message(
 
     with pytest.raises(RuntimeError, match="simulated patches replace failure"):
         with conn.transaction():
-            workers.process_one(
-                conn, "ingest_embed_frames", handlers.embed_frames_handler
-            )
+            workers.process_one(conn, "ingest_embed_frames", handlers.embed_frames_handler)
 
     n_patches = conn.execute(
         "SELECT count(*) FROM frame_patches WHERE frame_id = %s", (fid,)
@@ -685,8 +706,7 @@ def test_embed_frames_handler_crash_rolls_back_patches_pooled_and_message(
     assert n_patches == 0
 
     nulls = conn.execute(
-        "SELECT count(*) FROM frames "
-        "WHERE frame_id = %s AND pooled_embedding IS NULL",
+        "SELECT count(*) FROM frames WHERE frame_id = %s AND pooled_embedding IS NULL",
         (fid,),
     ).fetchone()[0]
     assert nulls == 1

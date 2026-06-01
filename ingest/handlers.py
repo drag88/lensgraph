@@ -46,15 +46,20 @@ from queues import pgmq_client
 def chunk_handler(conn: psycopg.Connection, payload: dict[str, Any]) -> None:
     """ingest_chunk: read transcript, chunk, persist, fan out embed_text jobs.
 
-    Payload: {video_id, step: "chunk", entity_id=0 (whole-video step)}.
+    Payload: {video_id, step: "chunk", entity_id=0 (whole-video step),
+    strategy?: str}. ``strategy`` is optional and defaults to ``fixed_window``
+    (the production strategy) — production queue messages omit it. The chunking
+    ablation passes ``strategy='transcript_segment'`` to chunk a second time
+    into coexisting rows (the chunks natural key includes chunking_strategy).
     """
     video_id = payload["video_id"]
+    strategy = payload.get("strategy", STRATEGY_NAME)
     talk = talks_repo.get(conn, video_id)
     if talk is None:
         raise ValueError(f"no talks row for video_id={video_id!r}")
 
     transcript_text = Path(talk.transcript_path).read_text(encoding="utf-8")
-    chunker = get_chunker(STRATEGY_NAME)
+    chunker = get_chunker(strategy)
     chunks = chunker(transcript_text, frames=[], video_id=video_id)
     if not chunks:
         # Empty transcript — nothing to fan out; handler ack-and-exit.
