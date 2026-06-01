@@ -273,3 +273,21 @@ Postgres stopped (`make db-down`). Verified baseline to return to is HEAD `84b82
 `test_gold.jsonl` untouched. The two provisional run rows are in `eval_runs`
 (`code='generator_bakeoff'`); no winner is locked, so
 `load_bakeoff_winner('generator', ...)` still returns `None`.
+
+## Post-close review fixes (2026-06-01)
+
+A review pass added two commits ON TOP of the `84b8257` close — the current
+tip is past `84b8257`, so run `git log --oneline -6` to get the real HEAD:
+
+- `589474e docs(handoff): correct session-3 close to HEAD 84b8257`
+- `c10fe7d fix(eval): strict judge booleans + missing-latency fails minimum`
+  - judge parsing now credits ONLY a JSON literal `true` (`is True`);
+    `"true"`/`"false"`/`1`/`0`/null/missing get no credit (can deflate, never
+    inflate faithfulness).
+  - missing/None `p95_latency_ms` now FAILS `p95_latency_sec_max` instead of
+    coercing to 0ms.
+  - +5 fast tests; `test_run_generator_bakeoff.py` now 19 passed; `make test` 171.
+
+Provisional bakeoff results are UNCHANGED (the real run's judge emitted proper
+JSON booleans, `judge_failures=0`). No live rerun. This addendum is itself a
+later commit; treat the branch tip from `git log` as the baseline.
