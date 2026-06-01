@@ -1,11 +1,17 @@
 {
   "provisional": true,
   "run_ids": {
-    "fixed_window": "chunking-ablation-fixe-b6ea581d",
-    "transcript_segment": "chunking-ablation-tran-c36dd8d7"
+    "fixed_window": "chunking-ablation-fixe-b793d883",
+    "transcript_segment": "chunking-ablation-tran-831b4d84"
   },
   "strategies": {
     "fixed_window": {
+      "per_channel_region_iou_at_5": {
+        "dense": 0.3218052470312148,
+        "sparse": 0.2875673210673929,
+        "multivec": 0.35714213803154327,
+        "rrf_4ch": 0.35184757255897453
+      },
       "per_channel_tr_at_5": {
         "dense": 1.0,
         "sparse": 0.7,
@@ -54,6 +60,12 @@
       "aligned": true
     },
     "transcript_segment": {
+      "per_channel_region_iou_at_5": {
+        "dense": 0.23529308162240142,
+        "sparse": 0.22839899748077191,
+        "multivec": 0.24292005856416132,
+        "rrf_4ch": 0.24584261995214823
+      },
       "per_channel_tr_at_5": {
         "dense": 1.0,
         "sparse": 0.8,

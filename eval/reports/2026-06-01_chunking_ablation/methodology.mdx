@@ -1,17 +1,45 @@
 # Chunking ablation — fixed_window vs transcript_segment (PROVISIONAL)
 
 **Run date:** 2026-06-01
-**Run IDs:** `chunking-ablation-fixe-b6ea581d` (fixed_window), `chunking-ablation-tran-c36dd8d7` (transcript_segment)
+**Run IDs:** `chunking-ablation-fixe-b793d883` (fixed_window), `chunking-ablation-tran-831b4d84` (transcript_segment)
 **Code path:** `chunking_ablation`
-**Outcome:** ⚠️ **PROVISIONAL — no winner.** Retrieval/substrate comparison only; boundary edge/standalone NOT scored (boundary judge has only a provisional edge-kappa). The headline finding is about the **gold spans**, not the strategies.
+**Outcome:** ⚠️ **PROVISIONAL.** Gold-span sizing resolved (clips are answer
+*regions*); the retrieval selector switched to **RegionIoU@5**, which now
+discriminates and puts **fixed_window** ahead on every channel. Not locked: the
+boundary tier (edge/standalone) is not cold-kappa-validated, so a full ADR-004
+chunking decision still waits on it. No `lock_bakeoff_winner`, no ADR amendment.
+
+## What changed since the first run (same date)
+
+The first pass reported TR@5 = 1.00/1.00, Contained@5 = 0.00/0.00, IoU@1 ≈ 0.2 —
+**no winner**, because all three metrics were dominated by the gold-span size,
+not the strategy. The dev_gold single_clip spans average **108.3s** (62–155s).
+
+We resolved the fork (the user's call): **the spans are intended answer
+regions.** The 10 questions are deliberately multi-claim (4–5 `expected_claims`
+each, distributed across the span — e.g. "what *two* reasons", "what planning
+tools *and* states *and* finish gate"). Tightening them to 20–40s moments would
+mean rewriting the questions into single-fact questions, which redesigns what the
+eval tests. We kept the spans and questions as-is and fixed the **metric**
+instead.
+
+New selector: **RegionIoU@5** — IoU of the *union of the top-5 retrieved chunks*
+(on the gold video) against the gold region. It rewards covering the whole region
+without dragging in unrelated time, and works at region scale where the others
+fail:
+
+- TR@5 is saturated (a 108s region overlaps something at any granularity).
+- IoU@1 sees only the rank-1 chunk, so it rewards one big chunk over several
+  small ones — a size artifact, not strategy quality.
+- Contained@5 needs a single wrapping chunk; no strategy produces one for 108s.
 
 ## Setup
 
 Both strategies coexist in `chunks` (natural key includes `chunking_strategy`);
 retrieval is strategy-filtered (every channel takes `chunking_strategy`, default
 `fixed_window` so production is unaffected). Same 10 single_clip dev_gold
-queries, same channels, top-5. transcript_segment chunked+embedded via the
-strategy-aware `chunk_handler` + drain.
+queries, same channels, top-5. Substrate unchanged from the first run (re-measure
+only, no re-chunk).
 
 ## Substrate
 
@@ -22,13 +50,24 @@ strategy-aware `chunk_handler` + drain.
 
 ## Retrieval metrics (n = 10 dev_gold, rrf_4ch)
 
-| metric | fixed_window | transcript_segment |
-|---|---:|---:|
-| TimestampRecall@5 | 1.00 | 1.00 |
-| **GoldSpanContained@5** | **0.00** | **0.00** |
-| **IoU@1** | **0.15** | **0.23** |
+| metric | fixed_window | transcript_segment | role |
+|---|---:|---:|---|
+| **RegionIoU@5** | **0.35** | **0.25** | **selector** |
+| TimestampRecall@5 | 1.00 | 1.00 | descriptive (saturated) |
+| GoldSpanContained@5 | 0.00 | 0.00 | descriptive (needs a 108s chunk) |
+| IoU@1 | 0.15 | 0.23 | descriptive (rank-1 size mismatch) |
 
-IoU@1 per channel:
+RegionIoU@5 per channel — fixed_window leads on **all four**:
+
+| channel | fixed_window | transcript_segment |
+|---|---:|---:|
+| dense | 0.32 | 0.24 |
+| sparse | 0.29 | 0.23 |
+| multivec | 0.36 | 0.24 |
+| rrf_4ch | 0.35 | 0.25 |
+
+IoU@1 per channel (descriptive — note it points the *other* way, which is the
+artifact RegionIoU@5 corrects):
 
 | channel | fixed_window | transcript_segment |
 |---|---:|---:|
@@ -37,42 +76,39 @@ IoU@1 per channel:
 | multivec | 0.19 | 0.22 |
 | rrf_4ch | 0.15 | 0.23 |
 
-## The headline: the gold spans are coarse (avg 108s)
+## Reading the result
 
-dev_gold single_clip spans average **108.3s** (min 62, max 155). That one fact
-explains every number above:
+fixed_window's five 30s chunks **tile** a ~108s region tightly (high
+intersection, lean union). transcript_segment's one-or-two large chunks (avg
+51–87s, p95 up to 156s) **overhang** the region, inflating the union and lowering
+the IoU. The signal is consistent across every channel, which is what makes the
+0.35-vs-0.25 gap credible at n=10 rather than noise on one fused ranking.
 
-- **TR@5 = 1.00 is trivially easy** — a 108s answer region overlaps many chunks
-  at any granularity. It was never going to discriminate.
-- **GoldSpanContained@5 = 0.00 for both** — no chunk *fully wraps* a 108s span.
-  fixed_window's 30s chunks are far too small; transcript_segment's 50–150s
-  chunks are closer but **non-overlapping, so they split the span at a sentence
-  boundary** and still don't contain it.
-- **IoU@1 is low for both (0.15–0.26)** because the gold span (108s) and the
-  chunks (30–150s) are mismatched in size and offset. transcript_segment's
-  larger, span-scale chunks align *slightly* better on the fused ranking
-  (0.23 vs 0.15) — a mild, not decisive, point in its favor *for this gold set*.
-
-**So the bottleneck is not the chunking strategy — it's that the gold spans are
-100s-scale answer *regions*, not tight clips.** No chunk granularity localizes a
-108s span tightly. Until that is resolved, IoU/Contained cannot crown a chunking
-winner; they mostly measure span-vs-chunk size mismatch.
+This also explains why IoU@1 was misleading: at rank-1, a single big chunk
+overlaps the region more than a single small chunk, so IoU@1 favored
+transcript_segment. RegionIoU@5 measures the strategy's *actual* localization
+behavior (how well its top-k jointly cover the region), which is the property a
+clip-retrieval product cares about.
 
 ## Decision
 
-**No winner. Provisional.** The added metrics did their job: they exposed that
-TR@5 = 1.00/1.00 was hiding poor localization (Contained 0.00, IoU ~0.2) driven
-by coarse gold spans. No `lock_bakeoff_winner`, no ADR amendment.
+**fixed_window is the provisional retrieval-localization leader. Not locked.**
+
+A full ADR-004 chunking decision is retrieval localization **plus** boundary
+quality (EdgeSensibility / Standalone). The boundary judge (`boundary_v1`) has
+only a provisional, non-independent edge-kappa (0.81 inflated; standalone ≈ 0.07)
+and is not cold-validated. We do not publish a chunking-quality claim off an
+unvalidated judge, so no winner is locked and ADR 004 is not amended this run.
+n = 10 dev_gold is also small.
 
 **Next, in order:**
-1. **Review the dev_gold spans.** Decide whether a "clip" is the full ~108s
-   answer region (then chunk-level IoU is the wrong yardstick and we report
-   region-recall) or a tighter ~20–40s moment (then re-curate spans, and
-   IoU/Contained become meaningful chunking discriminators).
-2. Only then re-run IoU/Contained as the chunking selection metric.
-3. Add the corpus-fit strategies (slide_boundary; a cheap embedding-similarity
-   semantic chunker) once the metric discriminates.
-4. Citation accuracy + cold-validated boundary kappa for the answer/boundary tiers.
+1. Cold boundary-kappa pass (fresh ~20 clips, edge + standalone, no LLM
+   suggestions) → validate `boundary_v1` → unlock the boundary tier.
+2. Then combine RegionIoU@5 (retrieval) + boundary quality for an ADR-004
+   chunking decision and consider locking.
+3. Add corpus-fit strategies (slide_boundary; a cheap embedding-similarity
+   semantic chunker) now that the retrieval selector discriminates.
+4. Generator bakeoff #2 re-run on the 213-chunk substrate + citation accuracy.
 
 ## Reproducibility
 
