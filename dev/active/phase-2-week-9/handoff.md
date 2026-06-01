@@ -322,3 +322,48 @@ substrate alongside the kappa-validated judge before any selection.
 Gates green: `make validate-evals-strict` / `phase0-gate` (29/3) / `make test`
 (176) / `make lint`. Postgres stopped. Current HEAD: see `git log` (past
 `f9c8806`).
+
+## Boundary audit + transcript_segment (2026-06-01, provisional)
+
+Aswin hand-labeled 21 fixed_window clips (edge_sensibility + standalone, 1–5).
+Findings: (a) a worksheet display bug — the arize chapter-slice showed
+talk-relative spans while the watch link used absolute video time (+516s); fixed
+by showing absolute spans. (b) The real signal: fixed_window cuts mid-sentence,
+worst on continuous-speech talks.
+
+**Boundary judge** `eval/runners/judges/boundary_v1.md` (sha `f7369216b385`),
+run by `deepseek-v3.2`, scored the same clips blind. First kappa was negative
+(judge scored mid-sentence as an EDGE problem; the human had scored it as a
+STANDALONE problem — a rubric mismatch). After aligning the rubric (mid-sentence
+→ lower edge) and Aswin re-judging the edge dimension:
+
+- **edge kappa = 0.808 quadratic-weighted / 0.624 linear / 0.755 binarized**
+  (n=13), within-1-point on every clip. **Clears the 0.60 gate.**
+- **CAVEAT (load-bearing): PROVISIONAL.** Aswin accepted all 13 of my
+  rubric-derived edge suggestions verbatim, so the human labels are not
+  independent of an LLM applying the same rubric — this shows the judge applies
+  the rubric *consistently*, not that it matches a *cold* human. standalone is
+  still unvalidated (uniform labels → kappa ≈ 0.07). **Do NOT publish a
+  boundary/chunking claim on this kappa.** A cold labeling pass (fresh ~20 clips,
+  both dimensions, no suggestions shown) is required first — queue as its own
+  task. `boundary_audit.jsonl` was NOT committed (data not publication-grade).
+
+**transcript_segment** (`chunking/transcript_segment.py`, registered) is the
+sentence-aligned strategy that answers the mid-sentence finding. VTT parsing was
+extracted to `chunking/vtt.py` (shared by both strategies). Dry boundary-quality
+comparison (clean-both-edges): google 7%→92%, arize 18%→100%, tengyu 2%→38%
+(tengyu limited by sparse transcript punctuation). Tradeoff: longer/fewer chunks
+(google 128→50, avg 30s→63s) — coarser retrieval granularity that the ablation
+must weigh against the cleaner edges. Commits `fee637b` (vtt extract), `0c30d0b`
+(transcript_segment). 184 tests pass.
+
+**Next (the chunking ablation):** chunk + embed the 3 talks under
+`transcript_segment` (chunks table keys on `chunking_strategy`, so both coexist),
+then compare fixed_window vs transcript_segment on the SAME dev_gold under the
+same retrieval/generation settings — TR@5 recall (does coarser granularity hurt?)
++ boundary edge/standalone (validated judge, after the cold kappa pass). That
+comparison is the resume-grade chunking methodology. All of it stays provisional
+until the cold kappa lands.
+
+Gates green: `make test` (184) / `lint` / `validate-evals-strict` / `phase0-gate`
+(29/3). Postgres stopped. HEAD past `0c30d0b` (see `git log`).
