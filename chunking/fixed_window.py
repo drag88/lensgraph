@@ -13,6 +13,7 @@ similar helper but drops timestamps (which the chunker needs).
 
 from __future__ import annotations
 
+import html
 import re
 
 from chunking.types import Chunk, Frame
@@ -20,6 +21,7 @@ from chunking.types import Chunk, Frame
 STRATEGY_NAME = "fixed_window"
 
 _INLINE_TAG_RE = re.compile(r"<[^>]*>")
+_SPEAKER_RE = re.compile(r"^>>\s*")
 _CUE_INDEX_RE = re.compile(r"^\d+$")
 _HEADER_PREFIXES = ("WEBVTT", "Kind:", "Language:", "NOTE")
 _TIMESTAMP_LINE_RE = re.compile(
@@ -35,14 +37,40 @@ def _ts_to_seconds(ts: str) -> float:
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
-def _parse_vtt(content: str) -> list[tuple[float, float, str]]:
-    """Parse VTT content into a list of `(start_sec, end_sec, text)` tuples.
+def _normalize_line(line: str) -> str:
+    """Strip inline word-timing tags, unescape HTML entities, drop a leading
+    `>>` speaker marker, and collapse internal whitespace.
 
-    Header lines (WEBVTT / Kind: / Language: / NOTE), cue-index lines (pure
-    integers), and inline tag markup (`<00:00:15.519><c>…</c>`) are stripped.
-    Cues whose text is empty after stripping are dropped.
+    `&gt;&gt;` -> `>>` -> dropped; `&amp;` -> `&`. Applied to every cue body
+    line so the rolling-residue compare in `_dedup_rolling` matches on the
+    settled text, and so chunk text carries no `&gt;` / `>>` noise.
     """
-    cues: list[tuple[float, float, str]] = []
+    s = _INLINE_TAG_RE.sub("", line)
+    s = html.unescape(s)
+    s = _SPEAKER_RE.sub("", s)
+    return " ".join(s.split()).strip()
+
+
+def _parse_vtt(content: str) -> list[tuple[float, float, list[str]]]:
+    """Parse VTT content into `(start_sec, end_sec, lines)` tuples.
+
+    `lines` is the ordered list of normalized, non-empty body lines for the
+    cue (see `_normalize_line`). Returning the line split — rather than a
+    pre-joined string — lets `_dedup_rolling` strip YouTube roll-up residue
+    by comparing each cue's leading line against the previous cue's tail.
+
+    Header lines (WEBVTT / Kind: / Language: / NOTE) and cue-index lines are
+    skipped; blank/whitespace lines are in-cue padding, not separators. Cues
+    are delimited by the next timestamp / header / EOF, and a cue with no
+    non-empty line is dropped.
+
+    Note: recovering the freshly-spoken (word-tagged) cues — which the
+    original blank-line-flush bug discarded — changes the cue-midpoint stream
+    `chunk()` windows over, so chunk start/end boundaries shift relative to
+    the buggy substrate. This is the correct alignment (text now matches its
+    timestamp); the change is re-verified by re-chunking + re-embedding.
+    """
+    cues: list[tuple[float, float, list[str]]] = []
     current_start: float | None = None
     current_end: float | None = None
     current_lines: list[str] = []
@@ -50,9 +78,7 @@ def _parse_vtt(content: str) -> list[tuple[float, float, str]]:
     def flush() -> None:
         nonlocal current_start, current_end, current_lines
         if current_start is not None and current_end is not None and current_lines:
-            text = " ".join(ln for ln in current_lines if ln).strip()
-            if text:
-                cues.append((current_start, current_end, text))
+            cues.append((current_start, current_end, current_lines))
         current_start = None
         current_end = None
         current_lines = []
@@ -60,7 +86,12 @@ def _parse_vtt(content: str) -> list[tuple[float, float, str]]:
     for raw in content.splitlines():
         line = raw.strip()
         if not line:
-            flush()
+            # Blank/whitespace lines are in-cue padding in YouTube roll-up
+            # VTT, NOT cue separators: the active word-tagged line sits AFTER
+            # a blank line inside the cue. Flushing here (the original bug)
+            # dropped every freshly-spoken cue and kept only the residue
+            # flickers, time-shifting all chunk text. Cues are delimited by
+            # the next timestamp / header / EOF instead.
             continue
         if line.startswith(_HEADER_PREFIXES):
             flush()
@@ -76,12 +107,41 @@ def _parse_vtt(content: str) -> list[tuple[float, float, str]]:
             # when no timestamp has been seen yet for this cue
             if current_start is None:
                 continue
-        stripped = _INLINE_TAG_RE.sub("", line).strip()
-        if stripped:
-            current_lines.append(stripped)
+        normalized = _normalize_line(line)
+        if normalized:
+            current_lines.append(normalized)
 
     flush()
     return cues
+
+
+def _dedup_rolling(
+    parsed: list[tuple[float, float, list[str]]],
+) -> list[tuple[float, float, str]]:
+    """Collapse YouTube roll-up residue into clean `(start, end, text)` cues.
+
+    Each roll-up cue repeats the previous cue's trailing line(s) as on-screen
+    residue before adding the newly spoken line. Naively joining every line
+    triplicates text and bleeds earlier words into later spans. This pass
+    drops any leading line that verbatim-matches the previous emitted cue's
+    last kept line.
+
+    Boundary-preserving by construction: every input cue is emitted with its
+    `(start, end)` untouched — flicker cues whose text is pure residue collapse
+    to an empty string but are KEPT, so the cue-midpoint stream `chunk()`
+    windows over is identical to the input. `prev_tail` advances only when a
+    cue contributes genuinely new content.
+    """
+    out: list[tuple[float, float, str]] = []
+    prev_tail: str | None = None
+    for start, end, lines in parsed:
+        kept = list(lines)
+        while kept and prev_tail is not None and kept[0] == prev_tail:
+            kept.pop(0)
+        if kept:
+            prev_tail = kept[-1]
+        out.append((start, end, " ".join(kept).strip()))
+    return out
 
 
 def _truncate_to_max_tokens(text: str, max_tokens: int) -> tuple[str, int]:
@@ -147,7 +207,7 @@ def chunk(
     if overlap_sec >= window_sec:
         raise ValueError(f"overlap_sec ({overlap_sec}) must be < window_sec ({window_sec})")
 
-    cues = _parse_vtt(transcript_vtt)
+    cues = _dedup_rolling(_parse_vtt(transcript_vtt))
     if not cues:
         return []
 
@@ -166,7 +226,13 @@ def chunk(
 
         actual_start = in_window[0][0]
         actual_end = in_window[-1][1]
-        joined = " ".join(t for _, _, t in in_window)
+        joined = " ".join(t for _, _, t in in_window if t).strip()
+        # A window holding only residue-collapsed (empty-text) cues — e.g. a
+        # pure-music head/tail — emits no chunk. Real-speech windows always
+        # carry new content, so this never drops a content chunk.
+        if not joined:
+            window_start += stride
+            continue
         snapped = _snap_to_sentence(joined)
         text, token_count = _truncate_to_max_tokens(snapped, max_tokens)
 

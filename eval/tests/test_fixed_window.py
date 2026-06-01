@@ -7,7 +7,7 @@ import textwrap
 import pytest
 
 from chunking import get_chunker
-from chunking.fixed_window import STRATEGY_NAME, chunk
+from chunking.fixed_window import STRATEGY_NAME, _dedup_rolling, _parse_vtt, chunk
 from chunking.types import Chunk, Frame
 
 
@@ -181,3 +181,113 @@ def test_sentence_snap_is_bounded_for_far_boundary():
     # (25.0), not the position of the early sentence boundary.
     assert c.start_sec == pytest.approx(0.0)
     assert c.end_sec == pytest.approx(25.0)
+
+
+# -- rolling-caption dedup -----------------------------------------------
+# YouTube auto-captions repeat each line as residue in the next cue(s),
+# triplicating text and bleeding earlier words into later spans. The
+# parser must dedup the residue WITHOUT moving any cue's (start, end).
+
+
+def _vtt_rolling_tagged() -> str:
+    """Roll-up with inline <c> word tags (W_CYk2ogcDI shape). Cue 2 is a
+    10ms flicker repeating cue 1's settled text; cue 3 carries cue 1's
+    tail as residue then the new line."""
+    return textwrap.dedent(
+        """\
+        WEBVTT
+        Kind: captions
+        Language: en
+
+        00:00:15.200 --> 00:00:16.710 align:start position:0%
+
+        Thanks<00:00:15.519><c> for</c><00:00:15.679><c> coming.</c><00:00:16.000><c> Thanks</c><00:00:16.480><c> me</c>
+
+        00:00:16.710 --> 00:00:16.720 align:start position:0%
+        Thanks for coming. Thanks me
+
+
+        00:00:16.720 --> 00:00:20.950 align:start position:0%
+        Thanks for coming. Thanks me
+        here.<00:00:17.039><c> Um</c><00:00:17.520><c> I'm</c><00:00:18.240><c> Tongima.</c>
+        """
+    )
+
+
+def _vtt_rolling_tagless() -> str:
+    """Roll-up with NO word tags and &gt;&gt; speaker markers (arize shape).
+    Residue must be caught by a verbatim prev-tail compare, not by tag
+    presence."""
+    return textwrap.dedent(
+        """\
+        WEBVTT
+        Kind: captions
+        Language: en
+
+        00:00:00.479 --> 00:00:01.750 align:start position:0%
+
+        &gt;&gt; Good morning everyone. Thanks so much
+
+        00:00:01.750 --> 00:00:01.760 align:start position:0%
+        &gt;&gt; Good morning everyone. Thanks so much
+
+        00:00:01.760 --> 00:00:03.750 align:start position:0%
+        &gt;&gt; Good morning everyone. Thanks so much
+        for spending your morning with me. It's
+        """
+    )
+
+
+def test_rolling_dedup_removes_residue_tagged():
+    cues = _dedup_rolling(_parse_vtt(_vtt_rolling_tagged()))
+    texts = [t for _, _, t in cues]
+    assert texts == [
+        "Thanks for coming. Thanks me",
+        "",  # flicker collapses to empty, cue KEPT
+        "here. Um I'm Tongima.",  # residue line dropped, new line kept
+    ]
+    # The settled phrase appears exactly once across the whole stream.
+    assert " ".join(texts).count("Thanks for coming. Thanks me") == 1
+    # No head-bleed: the 16.720 span must NOT carry the earlier phrase.
+    assert "Thanks for coming" not in cues[2][2]
+
+
+def test_rolling_dedup_removes_residue_tagless():
+    cues = _dedup_rolling(_parse_vtt(_vtt_rolling_tagless()))
+    texts = [t for _, _, t in cues]
+    assert texts == [
+        "Good morning everyone. Thanks so much",
+        "",
+        "for spending your morning with me. It's",
+    ]
+    # >> speaker marker and &gt; entity are gone everywhere.
+    joined = " ".join(texts)
+    assert "&gt;" not in joined
+    assert ">>" not in joined
+
+
+def test_rolling_dedup_preserves_cue_timestamps_and_count():
+    parsed = _parse_vtt(_vtt_rolling_tagged())
+    deduped = _dedup_rolling(parsed)
+    # Boundary-preserving: same number of cues, identical (start, end).
+    assert len(deduped) == len(parsed)
+    assert [(s, e) for s, e, _ in deduped] == [(s, e) for s, e, _ in parsed]
+
+
+def test_rolling_dedup_html_unescape_and_speaker_strip():
+    chunks = chunk(_vtt_rolling_tagless(), [], video_id="vid1")
+    for c in chunks:
+        assert "&gt;" not in c.text
+        assert not c.text.lstrip().startswith(">>")
+
+
+def test_chunk_text_aligns_to_span_no_head_bleed():
+    # Full chunk() over the tagged fixture: the phrase "Thanks for coming"
+    # must appear at most once (at its real 15.2s origin), never triplicated
+    # nor bled into a later span.
+    chunks = chunk(_vtt_rolling_tagged(), [], video_id="vid1")
+    for c in chunks:
+        assert c.text.count("Thanks for coming") <= 1
+    # The clean fixtures with distinct cue text are unaffected (dedup no-op).
+    clean = chunk(_vtt_60s(), [], video_id="vid1")
+    assert len(clean) == 3
