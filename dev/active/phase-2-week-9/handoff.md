@@ -190,7 +190,7 @@ Verified baseline to return to is HEAD `4855f70`. `test_gold.jsonl` untouched.
 
 # Session 3 close — bakeoff #2 generator + judge (PROVISIONAL)
 
-Closed: 2026-05-31. HEAD now `7af8f9e`.
+Closed: 2026-05-31. HEAD now `84b8257`.
 
 ## Five-line read
 
@@ -234,6 +234,7 @@ make db-down                                                        # Postgres s
 - `de0466d eval: add content-hashed cross-family faithfulness judge prompt`
 - `c45b749 feat(eval): generator bakeoff #2 runner + faithfulness measurement`
 - `7af8f9e eval: provisional generator bakeoff #2 results (no winner)`
+- `84b8257 docs(handoff): week-9 session-3 close — provisional bakeoff #2`
 
 ## What failed / was not run (and why)
 
@@ -268,7 +269,7 @@ new answer-tier audit minimum), `eval/runners/measure_generation.py` (kappa wiri
 
 ## Stop condition (session 3)
 
-Postgres stopped (`make db-down`). Verified baseline to return to is HEAD `7af8f9e`.
+Postgres stopped (`make db-down`). Verified baseline to return to is HEAD `84b8257`.
 `test_gold.jsonl` untouched. The two provisional run rows are in `eval_runs`
 (`code='generator_bakeoff'`); no winner is locked, so
 `load_bakeoff_winner('generator', ...)` still returns `None`.
