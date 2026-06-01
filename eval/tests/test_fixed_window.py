@@ -7,8 +7,9 @@ import textwrap
 import pytest
 
 from chunking import get_chunker
-from chunking.fixed_window import STRATEGY_NAME, _dedup_rolling, _parse_vtt, chunk
+from chunking.fixed_window import STRATEGY_NAME, chunk
 from chunking.types import Chunk, Frame
+from chunking.vtt import dedup_rolling, parse_vtt_cues
 
 
 def _vtt_60s() -> str:
@@ -239,7 +240,7 @@ def _vtt_rolling_tagless() -> str:
 
 
 def test_rolling_dedup_removes_residue_tagged():
-    cues = _dedup_rolling(_parse_vtt(_vtt_rolling_tagged()))
+    cues = dedup_rolling(parse_vtt_cues(_vtt_rolling_tagged()))
     texts = [t for _, _, t in cues]
     assert texts == [
         "Thanks for coming. Thanks me",
@@ -253,7 +254,7 @@ def test_rolling_dedup_removes_residue_tagged():
 
 
 def test_rolling_dedup_removes_residue_tagless():
-    cues = _dedup_rolling(_parse_vtt(_vtt_rolling_tagless()))
+    cues = dedup_rolling(parse_vtt_cues(_vtt_rolling_tagless()))
     texts = [t for _, _, t in cues]
     assert texts == [
         "Good morning everyone. Thanks so much",
@@ -267,8 +268,8 @@ def test_rolling_dedup_removes_residue_tagless():
 
 
 def test_rolling_dedup_preserves_cue_timestamps_and_count():
-    parsed = _parse_vtt(_vtt_rolling_tagged())
-    deduped = _dedup_rolling(parsed)
+    parsed = parse_vtt_cues(_vtt_rolling_tagged())
+    deduped = dedup_rolling(parsed)
     # Boundary-preserving: same number of cues, identical (start, end).
     assert len(deduped) == len(parsed)
     assert [(s, e) for s, e, _ in deduped] == [(s, e) for s, e, _ in parsed]
