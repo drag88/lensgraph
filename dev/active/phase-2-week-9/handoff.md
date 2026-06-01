@@ -367,3 +367,35 @@ until the cold kappa lands.
 
 Gates green: `make test` (184) / `lint` / `validate-evals-strict` / `phase0-gate`
 (29/3). Postgres stopped. HEAD past `0c30d0b` (see `git log`).
+
+## Chunking ablation — retrieval/substrate (2026-06-01, provisional)
+
+Built the minimal strategy-aware path and ran the ablation. Commits `badd98a`
+(retrieve filter), `12b54f8` (chunk_handler strategy key), `29b1804` (runner +
+report).
+
+- **Strategy-aware retrieval:** `dense/sparse/multivec/bm25.retrieve` take
+  `chunking_strategy` (default `fixed_window`), so strategies coexist in `chunks`
+  without retrieval mixing them. Production (answer loop) unaffected — omits the
+  arg. 5 fast tests (`test_retrieve_strategy_filter.py`).
+- **Strategy-aware ingest:** `chunk_handler` honors an optional `strategy`
+  payload key (default fixed_window). Slow test in `test_handlers_slow.py`.
+- **Substrate:** transcript_segment chunked + embedded → **82 chunks** (13/19/50),
+  all channels aligned. fixed_window stays 213. Both coexist in `chunks`.
+- **Result (`code_path='chunking_ablation'`, run_ids `…fixe-0a82ad1c` /
+  `…tran-29945279`):** transcript_segment **matches fixed_window TR@5**
+  (vector-best 1.00; sparse 0.70→0.80) at **2.6× coarser** chunks (avg 30s→63–87s,
+  p95 up to 156s). `eval/reports/2026-06-01_chunking_ablation/`.
+- **CAVEAT / no winner:** TR@5 structurally favors larger chunks (a 90s chunk
+  contains a span more easily), so equal recall is NOT evidence of "better." A
+  real selection needs `GoldSpanContained`/`IoU@1` (does the chunk *tightly*
+  contain the span — where coarse chunks should lose), citation accuracy, and the
+  cold-validated boundary kappa. None run here. No lock, no ADR amendment.
+
+**Next:** `GoldSpanContained@k` + `IoU@1` per strategy (penalize the coarse
+transcript_segment granularity), then citation-accuracy on dev_gold, then the
+cold boundary-kappa pass — only then a chunking selection. All provisional until.
+
+Gates green: `make test` (189) / `lint` / `validate-evals-strict` / `phase0-gate`
+(29/3); slow `test_handlers_slow.py::…strategy_param…` passes. Postgres stopped.
+HEAD past `29b1804` (see `git log`).
