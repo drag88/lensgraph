@@ -291,3 +291,34 @@ tip is past `84b8257`, so run `git log --oneline -6` to get the real HEAD:
 Provisional bakeoff results are UNCHANGED (the real run's judge emitted proper
 JSON booleans, `judge_failures=0`). No live rerun. This addendum is itself a
 later commit; treat the branch tip from `git log` as the baseline.
+
+## Rolling-caption VTT dedup fix + re-chunk (2026-06-01)
+
+Setting up the `boundary_audit` worksheet surfaced a corpus-wide chunk-text
+bug: opening a clip at 17s did not match its stored text. Root cause in
+`chunking/fixed_window.py::_parse_vtt`: YouTube roll-up captions repeat each
+line as residue, and the blank-line flush dropped the freshly-spoken cues and
+kept only the time-shifted residue — so chunk text was triplicated AND
+~1 cue early. Fix: blank lines are in-cue padding (cues end at the next
+timestamp), `_normalize_line` strips tags + html-unescapes + drops `>>`, and
+`_dedup_rolling` removes repeated leading lines. Commits `0ea9686` (fix + 5
+TDD cases), `f9c8806` (doc/report refresh).
+
+Re-chunked + re-embedded all 3 talks (delete-then-`chunk_handler`, drain
+`ingest_embed_text`): **212 → 213 chunks** (W 45→46; arize 39; google 128),
+every channel aligned (chunks = dense = sparse = token = tsv per video).
+"Thanks for coming" now appears once across W chunks (was triplicated).
+Boundaries shifted (recovering dropped active cues), re-verified by re-running
+the embeddings bakeoff on the clean substrate: **`embeddings-bakeoff-ada840be66b9`**,
+winner unchanged (`bge-m3-all-channels`, vector-best 1.00), `rrf_4ch`
+**0.90 → 1.00**, `dense`/`multivec` 1.00, `sparse` 0.70.
+
+Regenerated the boundary_audit worksheet from clean chunks
+(`dev/active/phase-2-week-9/boundary_audit.{worksheet.md,_labels.csv}`,
+untracked) — ready for human edge/standalone labels. The provisional generator
+bakeoff (212-chunk substrate) is annotated; re-run it on the 213-chunk
+substrate alongside the kappa-validated judge before any selection.
+
+Gates green: `make validate-evals-strict` / `phase0-gate` (29/3) / `make test`
+(176) / `make lint`. Postgres stopped. Current HEAD: see `git log` (past
+`f9c8806`).
