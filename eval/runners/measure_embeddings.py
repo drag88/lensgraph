@@ -29,10 +29,7 @@ from retrieve import bm25, dense, multivec, rrf, sparse
 from retrieve.types import ChannelResult, FusedResult
 
 _DEV_GOLD_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "corpora"
-    / "ai_engineering_v0"
-    / "dev_gold.jsonl"
+    Path(__file__).resolve().parent.parent / "corpora" / "ai_engineering_v0" / "dev_gold.jsonl"
 )
 
 
@@ -92,6 +89,43 @@ def _passes_at_k(
     return False
 
 
+def _fully_contains(r: ChannelResult | FusedResult, gold: GoldQuery) -> bool:
+    return (
+        r.video_id == gold.video_id and r.start_sec <= gold.start_sec and r.end_sec >= gold.end_sec
+    )
+
+
+def _iou_vs_gold(r: ChannelResult | FusedResult, gold: GoldQuery) -> float:
+    if r.video_id != gold.video_id:
+        return 0.0
+    inter = max(0.0, min(r.end_sec, gold.end_sec) - max(r.start_sec, gold.start_sec))
+    union = (r.end_sec - r.start_sec) + (gold.end_sec - gold.start_sec) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def gold_span_contained_at_k(
+    results: Sequence[ChannelResult | FusedResult], gold: GoldQuery, *, k: int
+) -> bool:
+    """True if ANY of the top-k chunks FULLY contains the gold span
+    (``chunk.start <= gold.start`` AND ``chunk.end >= gold.end``).
+
+    Penalizes over-segmentation: chunks smaller than the gold span cannot
+    contain it, so a too-fine strategy scores low here. Like TR@k, it favors
+    larger chunks — read it alongside ``iou_at_1`` (which penalizes them).
+    """
+    return any(_fully_contains(r, gold) for r in results[:k])
+
+
+def iou_at_1(results: Sequence[ChannelResult | FusedResult], gold: GoldQuery) -> float:
+    """Intersection-over-union of the rank-1 chunk vs the gold span.
+
+    Penalizes chunks that are too large (big union) or off-center. This is the
+    metric where coarse strategies (e.g. a 150s transcript_segment chunk around
+    a 20s span) lose. 0.0 if no results or wrong video.
+    """
+    return _iou_vs_gold(results[0], gold) if results else 0.0
+
+
 ChannelFn = Callable[
     [psycopg.Connection, str],
     list[ChannelResult] | list[FusedResult],
@@ -134,6 +168,48 @@ def tr_at_k(
         top_ks.append([_result_to_dict(r) for r in results[:k]])
         passes.append(_passes_at_k(results, ex, k=k))
     return sum(passes) / len(examples), passes, top_ks
+
+
+def channel_recall(
+    conn: psycopg.Connection,
+    examples: Sequence[GoldQuery],
+    channel_fn: ChannelFn,
+    *,
+    k: int = 5,
+) -> dict:
+    """One pass over ``examples`` returning TR@k, GoldSpanContained@k, and
+    IoU@1 for ``channel_fn``, plus per-example detail. One retrieval call per
+    example (vs three if the metrics were computed separately)."""
+    if not examples:
+        return {
+            "tr_at_k": 0.0,
+            "gold_span_contained_at_k": 0.0,
+            "iou_at_1": 0.0,
+            "per_example_pass": [],
+            "per_example_contained": [],
+            "per_example_iou": [],
+            "top_ks": [],
+        }
+    tr: list[bool] = []
+    contained: list[bool] = []
+    ious: list[float] = []
+    top_ks: list[list[dict]] = []
+    for ex in examples:
+        results = channel_fn(conn, ex.question)
+        top_ks.append([_result_to_dict(r) for r in results[:k]])
+        tr.append(_passes_at_k(results, ex, k=k))
+        contained.append(gold_span_contained_at_k(results, ex, k=k))
+        ious.append(iou_at_1(results, ex))
+    n = len(examples)
+    return {
+        "tr_at_k": sum(tr) / n,
+        "gold_span_contained_at_k": sum(contained) / n,
+        "iou_at_1": sum(ious) / n,
+        "per_example_pass": tr,
+        "per_example_contained": contained,
+        "per_example_iou": ious,
+        "top_ks": top_ks,
+    }
 
 
 def _dense_fn(conn: psycopg.Connection, q: str) -> list[ChannelResult]:
@@ -200,9 +276,7 @@ def measure_all_channels(
     """
     per_channel: dict[str, float] = {}
     per_example_pass: dict[str, dict[str, bool]] = {ex.example_id: {} for ex in examples}
-    per_example_top_k: dict[str, dict[str, list[dict]]] = {
-        ex.example_id: {} for ex in examples
-    }
+    per_example_top_k: dict[str, dict[str, list[dict]]] = {ex.example_id: {} for ex in examples}
     for name, fn in CHANNEL_FNS.items():
         score, passes, top_ks = tr_at_k(conn, examples, fn, k=k)
         per_channel[name] = score

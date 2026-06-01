@@ -1,8 +1,8 @@
 {
   "provisional": true,
   "run_ids": {
-    "fixed_window": "chunking-ablation-fixe-0a82ad1c",
-    "transcript_segment": "chunking-ablation-tran-29945279"
+    "fixed_window": "chunking-ablation-fixe-b6ea581d",
+    "transcript_segment": "chunking-ablation-tran-c36dd8d7"
   },
   "strategies": {
     "fixed_window": {
@@ -11,6 +11,18 @@
         "sparse": 0.7,
         "multivec": 1.0,
         "rrf_4ch": 1.0
+      },
+      "per_channel_gold_span_contained_at_5": {
+        "dense": 0.0,
+        "sparse": 0.0,
+        "multivec": 0.0,
+        "rrf_4ch": 0.0
+      },
+      "per_channel_iou_at_1": {
+        "dense": 0.25590304509328554,
+        "sparse": 0.1539947921971235,
+        "multivec": 0.18885722703229516,
+        "rrf_4ch": 0.15106703183038786
       },
       "vector_best_score": 1.0,
       "n_examples": 10,
@@ -47,6 +59,18 @@
         "sparse": 0.8,
         "multivec": 1.0,
         "rrf_4ch": 1.0
+      },
+      "per_channel_gold_span_contained_at_5": {
+        "dense": 0.0,
+        "sparse": 0.0,
+        "multivec": 0.0,
+        "rrf_4ch": 0.0
+      },
+      "per_channel_iou_at_1": {
+        "dense": 0.22514560125609018,
+        "sparse": 0.19735822193979752,
+        "multivec": 0.21788256300147052,
+        "rrf_4ch": 0.23142106789057668
       },
       "vector_best_score": 1.0,
       "n_examples": 10,

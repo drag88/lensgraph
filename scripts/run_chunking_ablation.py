@@ -148,20 +148,26 @@ def chunk_stats(conn: psycopg.Connection, strategy: str) -> dict:
 
 
 def measure_strategy(conn: psycopg.Connection, strategy: str, examples) -> tuple[dict, dict]:
-    """Per-channel TR@5 + per-example detail for one strategy."""
+    """Per-channel TR@5 + GoldSpanContained@5 + IoU@1 + per-example detail."""
     fns = _channel_fns(strategy)
-    per_channel = {}
+    tr5 = {}
+    contained5 = {}
+    iou1 = {}
     per_example_pass = {ex.example_id: {} for ex in examples}
     per_example_topk = {ex.example_id: {} for ex in examples}
     for name, fn in fns.items():
-        score, passes, top_ks = me.tr_at_k(conn, examples, fn, k=5)
-        per_channel[name] = score
-        for ex, p, tk in zip(examples, passes, top_ks, strict=True):
+        m = me.channel_recall(conn, examples, fn, k=5)
+        tr5[name] = m["tr_at_k"]
+        contained5[name] = m["gold_span_contained_at_k"]
+        iou1[name] = m["iou_at_1"]
+        for ex, p, tk in zip(examples, m["per_example_pass"], m["top_ks"], strict=True):
             per_example_pass[ex.example_id][name] = bool(p)
             per_example_topk[ex.example_id][name] = tk
     summary = {
-        "per_channel_tr_at_5": per_channel,
-        "vector_best_score": max(per_channel[c] for c in ("dense", "sparse", "multivec")),
+        "per_channel_tr_at_5": tr5,
+        "per_channel_gold_span_contained_at_5": contained5,
+        "per_channel_iou_at_1": iou1,
+        "vector_best_score": max(tr5[c] for c in ("dense", "sparse", "multivec")),
         "n_examples": len(examples),
         **chunk_stats(conn, strategy),
     }
@@ -242,14 +248,24 @@ def _report(results: dict, run_ids: dict) -> None:
         return ch, sm
 
     sys.stdout.write("\n=== CHUNKING ABLATION (PROVISIONAL — no winner) ===\n")
+    sys.stdout.write("TR@5 (rrf_4ch) / GoldSpanContained@5 (rrf) / IoU@1 (rrf) per strategy:\n")
     sys.stdout.write(
-        f"{'strategy':20} {'chunks':>7} {'dense':>6} {'sparse':>6} {'multivec':>9} {'rrf_4ch':>8} {'aligned':>8}\n"
+        f"{'strategy':20} {'chunks':>7} {'TR@5':>6} {'Contained@5':>12} {'IoU@1':>7} {'aligned':>8}\n"
     )
     for s in (BASELINE, CANDIDATE):
-        ch, sm = fmt(s)
+        _ch, sm = fmt(s)
+        tr = sm["per_channel_tr_at_5"]["rrf_4ch"]
+        cont = sm["per_channel_gold_span_contained_at_5"]["rrf_4ch"]
+        iou = sm["per_channel_iou_at_1"]["rrf_4ch"]
         sys.stdout.write(
-            f"{s:20} {sm['n_total']:>7} {ch['dense']:>6.2f} {ch['sparse']:>6.2f} "
-            f"{ch['multivec']:>9.2f} {ch['rrf_4ch']:>8.2f} {str(sm['aligned']):>8}\n"
+            f"{s:20} {sm['n_total']:>7} {tr:>6.2f} {cont:>12.2f} {iou:>7.2f} {str(sm['aligned']):>8}\n"
+        )
+    sys.stdout.write("\nIoU@1 per channel (the granularity discriminator):\n")
+    for s in (BASELINE, CANDIDATE):
+        iou = results[s][0]["per_channel_iou_at_1"]
+        sys.stdout.write(
+            f"  {s:20} dense={iou['dense']:.2f} sparse={iou['sparse']:.2f} "
+            f"multivec={iou['multivec']:.2f} rrf_4ch={iou['rrf_4ch']:.2f}\n"
         )
     sys.stdout.write("\nper-talk chunk count / avg / p95 duration:\n")
     for s in (BASELINE, CANDIDATE):

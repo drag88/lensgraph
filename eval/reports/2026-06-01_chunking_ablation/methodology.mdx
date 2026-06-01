@@ -1,82 +1,83 @@
 # Chunking ablation — fixed_window vs transcript_segment (PROVISIONAL)
 
 **Run date:** 2026-06-01
-**Run IDs:** `chunking-ablation-fixe-0a82ad1c` (fixed_window), `chunking-ablation-tran-29945279` (transcript_segment)
+**Run IDs:** `chunking-ablation-fixe-b6ea581d` (fixed_window), `chunking-ablation-tran-c36dd8d7` (transcript_segment)
 **Code path:** `chunking_ablation`
-**Outcome:** ⚠️ **PROVISIONAL — no winner.** Retrieval/substrate comparison only. Boundary edge/standalone quality is NOT scored (the boundary judge has only a provisional edge-kappa, not a cold-validated one — see the week-9 handoff). No selection.
+**Outcome:** ⚠️ **PROVISIONAL — no winner.** Retrieval/substrate comparison only; boundary edge/standalone NOT scored (boundary judge has only a provisional edge-kappa). The headline finding is about the **gold spans**, not the strategies.
 
 ## Setup
 
-Both strategies' chunks coexist in the `chunks` table (natural key includes
-`chunking_strategy`). Retrieval is strategy-filtered — every text channel
-(`dense`, `sparse`, `multivec`, `bm25`) takes `chunking_strategy`
-(default `fixed_window`, so production is unaffected). Same 10 single_clip
-dev_gold queries, same channels, top-5. `transcript_segment` was chunked +
-embedded via the strategy-aware `chunk_handler` (`strategy` payload key) +
-`ingest_embed_text` drain.
+Both strategies coexist in `chunks` (natural key includes `chunking_strategy`);
+retrieval is strategy-filtered (every channel takes `chunking_strategy`, default
+`fixed_window` so production is unaffected). Same 10 single_clip dev_gold
+queries, same channels, top-5. transcript_segment chunked+embedded via the
+strategy-aware `chunk_handler` + drain.
 
 ## Substrate
 
-| strategy | chunks | dense=sparse=token=tsv aligned |
-|---|---:|:---:|
-| fixed_window | 213 | ✅ |
-| transcript_segment | 82 | ✅ |
+| strategy | chunks | avg dur (tengyu/arize/google) | aligned |
+|---|---:|---|:---:|
+| fixed_window | 213 | 29.5 / 29.6 / 29.7 s | ✅ |
+| transcript_segment | 82 | 86.6 / 51.5 / 63.4 s (p95 up to 156s) | ✅ |
 
-Per-talk chunk count · avg · p95 duration:
+## Retrieval metrics (n = 10 dev_gold, rrf_4ch)
 
-| talk | fixed_window | transcript_segment |
-|---|---|---|
-| W_CYk2ogcDI (tengyu) | 46 · 29.5s · 31.5s | 13 · **86.6s · 149.4s** |
-| aie_sg…arize | 39 · 29.6s · 31.6s | 19 · 51.5s · 95.4s |
-| nXafozNIk3c (google) | 128 · 29.7s · 32.0s | 50 · 63.4s · **155.9s** |
+| metric | fixed_window | transcript_segment |
+|---|---:|---:|
+| TimestampRecall@5 | 1.00 | 1.00 |
+| **GoldSpanContained@5** | **0.00** | **0.00** |
+| **IoU@1** | **0.15** | **0.23** |
 
-transcript_segment is **2.6× fewer, much longer chunks** — it runs each chunk
-until a sentence ends past the 30s target. tengyu's sparse punctuation pushes
-its chunks longest (up to 149s).
-
-## Retrieval — TimestampRecall@5 (n = 10 dev_gold)
+IoU@1 per channel:
 
 | channel | fixed_window | transcript_segment |
 |---|---:|---:|
-| dense | 1.00 | 1.00 |
-| sparse | 0.70 | **0.80** |
-| multivec | 1.00 | 1.00 |
-| rrf_4ch | 1.00 | 1.00 |
-| **vector-best** | **1.00** | **1.00** |
+| dense | 0.26 | 0.23 |
+| sparse | 0.15 | 0.20 |
+| multivec | 0.19 | 0.22 |
+| rrf_4ch | 0.15 | 0.23 |
 
-transcript_segment **matches fixed_window on recall** (vector-best 1.00) and
-slightly improves the lexical/sparse channel (0.70 → 0.80) — the longer,
-sentence-complete chunks give BM25/sparse more lexical surface.
+## The headline: the gold spans are coarse (avg 108s)
 
-## The load-bearing caveat — why this is not "transcript_segment wins"
+dev_gold single_clip spans average **108.3s** (min 62, max 155). That one fact
+explains every number above:
 
-**TR@5 structurally favors larger chunks.** The metric asks "does the gold span
-fall inside any top-5 chunk?" — a 90s chunk is far more likely to contain a span
-than a 30s one, regardless of boundary quality. So transcript_segment's equal
-recall at 2.6× the chunk size is **not** evidence it retrieves better; partly it
-just has bigger nets.
+- **TR@5 = 1.00 is trivially easy** — a 108s answer region overlaps many chunks
+  at any granularity. It was never going to discriminate.
+- **GoldSpanContained@5 = 0.00 for both** — no chunk *fully wraps* a 108s span.
+  fixed_window's 30s chunks are far too small; transcript_segment's 50–150s
+  chunks are closer but **non-overlapping, so they split the span at a sentence
+  boundary** and still don't contain it.
+- **IoU@1 is low for both (0.15–0.26)** because the gold span (108s) and the
+  chunks (30–150s) are mismatched in size and offset. transcript_segment's
+  larger, span-scale chunks align *slightly* better on the fused ranking
+  (0.23 vs 0.15) — a mild, not decisive, point in its favor *for this gold set*.
 
-What this run does NOT measure (and what a real selection needs):
-- **`GoldSpanContained@k` / `IoU@1`** — does the chunk *tightly* contain the
-  span, or is it bloated? This is where 90–156s chunks should lose. Not run here.
-- **Citation accuracy / answer faithfulness** — a 150s chunk makes a precise
-  timestamped citation harder. The generation tier, not measured here.
-- **Boundary edge/standalone** — the original motivation. Needs the
-  cold-kappa-validated boundary judge first.
+**So the bottleneck is not the chunking strategy — it's that the gold spans are
+100s-scale answer *regions*, not tight clips.** No chunk granularity localizes a
+108s span tightly. Until that is resolved, IoU/Contained cannot crown a chunking
+winner; they mostly measure span-vs-chunk size mismatch.
 
 ## Decision
 
-**No winner. Provisional.** Recorded honestly: transcript_segment preserves
-retrieval recall while producing cleaner but much coarser chunks. Whether the
-cleaner boundaries are worth the coarser granularity is undecided until
-`GoldSpanContained`/`IoU` + citation accuracy + a validated boundary kappa are
-run. No `lock_bakeoff_winner`; no ADR amendment.
+**No winner. Provisional.** The added metrics did their job: they exposed that
+TR@5 = 1.00/1.00 was hiding poor localization (Contained 0.00, IoU ~0.2) driven
+by coarse gold spans. No `lock_bakeoff_winner`, no ADR amendment.
+
+**Next, in order:**
+1. **Review the dev_gold spans.** Decide whether a "clip" is the full ~108s
+   answer region (then chunk-level IoU is the wrong yardstick and we report
+   region-recall) or a tighter ~20–40s moment (then re-curate spans, and
+   IoU/Contained become meaningful chunking discriminators).
+2. Only then re-run IoU/Contained as the chunking selection metric.
+3. Add the corpus-fit strategies (slide_boundary; a cheap embedding-similarity
+   semantic chunker) once the metric discriminates.
+4. Citation accuracy + cold-validated boundary kappa for the answer/boundary tiers.
 
 ## Reproducibility
 
 ```bash
 make db-up
-set -a && . ./.env && set +a   # not needed (no hosted calls; local BGE-M3 only)
-uv run python -m scripts.run_chunking_ablation            # chunk+embed+measure
-uv run python -m scripts.run_chunking_ablation --measure-only   # re-measure only
+uv run python -m scripts.run_chunking_ablation              # chunk+embed+measure
+uv run python -m scripts.run_chunking_ablation --measure-only   # re-measure only (no re-chunk)
 ```
