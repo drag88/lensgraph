@@ -18,11 +18,27 @@ v0 total: ~80 examples across 10–12 talks. v1 target: ~250.
 
 ## Metrics
 
+### Region vs clip — what a gold span is
+
+A dev_gold `single_clip` span is an **answer region**, not a tight moment. The
+questions are deliberately multi-claim (4–5 `expected_claims` each, distributed
+across the span), so the span covers the whole stretch of speech where the answer
+is made. dev_gold spans average ~108s (62–155s). This is intended: a talk-RAG
+user asking "what two reasons does he give" wants to jump to the ~2-minute
+explanation, not a 20s snippet. (Resolved 2026-06-01; see
+`eval/reports/2026-06-01_chunking_ablation/methodology.mdx`.)
+
+The consequence for metrics: because spans are regions, the chunking **selector**
+is `RegionIoU@5`. `TimestampRecall@5`, `GoldSpanContained@k`, and `IoU@1` are
+**descriptive only** for chunking selection — against a 108s region they measure
+chunk-vs-region size mismatch, not strategy quality.
+
 ### Retrieval tier — judges chunking strategies
 
-- `TimestampRecall@k` for k ∈ {1, 3, 5} — does the gold span fall inside any retrieved chunk?
-- `GoldSpanContained@k` — is the gold span fully contained in a single retrieved chunk? Differs from recall in penalizing over-segmentation.
-- `IoU@1` — intersection-over-union of top chunk vs gold. Exposes chunks that are too large or off-center.
+- `RegionIoU@5` — IoU of the **union of the top-5 retrieved chunks** (on the gold video) vs the gold region. **The chunking selector.** Rewards covering the whole region without dragging in unrelated time, so it discriminates where the metrics below saturate or reward coarse chunks.
+- `TimestampRecall@k` for k ∈ {1, 3, 5} — does the gold span fall inside any retrieved chunk? Descriptive: saturates at 1.00 for region-scale spans.
+- `GoldSpanContained@k` — is the gold span fully contained in a single retrieved chunk? Descriptive: 0.00 for region-scale spans (no chunk wraps 108s).
+- `IoU@1` — intersection-over-union of top chunk vs gold. Descriptive: at rank-1 it rewards one big chunk over several small ones, the opposite of region localization.
 - `Latency` p50, p95 per stage (retrieve, rerank, generate).
 
 ### Boundary tier — judges chunk shape

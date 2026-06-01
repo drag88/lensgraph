@@ -9,6 +9,7 @@ from eval.runners.measure_embeddings import (
     channel_recall,
     gold_span_contained_at_k,
     iou_at_1,
+    region_iou_at_k,
 )
 from retrieve.types import ChannelResult
 
@@ -70,6 +71,52 @@ def test_iou_uses_rank_1_only_and_zero_when_empty():
     assert iou_at_1([_r(100.0, 120.0, video="OTHER")], _GOLD) == 0.0
 
 
+# -- Region-IoU@k ---------------------------------------------------------
+#
+# Region-scale localization: IoU of the UNION of the top-k chunks vs the gold
+# region. Unlike IoU@1 (rank-1 only) it rewards tiling a region with several
+# small chunks; unlike Contained@k it does not require a single wrapping chunk.
+# This is the selector for the "clips are answer regions" methodology.
+
+
+def test_region_iou_single_chunk_exact_match_is_one():
+    assert region_iou_at_k([_r(100.0, 120.0)], _GOLD, k=5) == pytest.approx(1.0)
+
+
+def test_region_iou_small_chunks_tiling_the_region_score_one():
+    # two adjacent 10s chunks tile [100,120] exactly. Contained@k would be False
+    # (no single chunk wraps it) and IoU@1 only 0.5 (sees rank-1 [100,110]).
+    results = [_r(100.0, 110.0, rank=1), _r(110.0, 120.0, rank=2)]
+    assert region_iou_at_k(results, _GOLD, k=5) == pytest.approx(1.0)
+
+
+def test_region_iou_penalizes_oversized_union():
+    # one 100s chunk around the 20s region -> inter 20, union 100 -> 0.2
+    assert region_iou_at_k([_r(60.0, 160.0)], _GOLD, k=5) == pytest.approx(0.2)
+
+
+def test_region_iou_penalizes_overhang_from_extra_chunks():
+    # union [90,130]=40s vs 20s region: inter 20, union 40 -> 0.5
+    results = [_r(90.0, 115.0, rank=1), _r(115.0, 130.0, rank=2)]
+    assert region_iou_at_k(results, _GOLD, k=5) == pytest.approx(0.5)
+
+
+def test_region_iou_merges_overlapping_chunks_without_double_count():
+    # overlapping [100,115] + [110,120] merge to [100,120] -> exact -> 1.0
+    results = [_r(100.0, 115.0, rank=1), _r(110.0, 120.0, rank=2)]
+    assert region_iou_at_k(results, _GOLD, k=5) == pytest.approx(1.0)
+
+
+def test_region_iou_respects_k_and_video_and_empty():
+    # tiling chunks past k are excluded
+    results = [_r(100.0, 110.0, rank=1)] + [_r(110.0, 120.0, rank=2)]
+    assert region_iou_at_k(results, _GOLD, k=1) == pytest.approx(0.5)  # only [100,110]
+    assert region_iou_at_k(results, _GOLD, k=2) == pytest.approx(1.0)
+    # wrong-video chunks are filtered out of the union
+    assert region_iou_at_k([_r(100.0, 120.0, video="OTHER")], _GOLD, k=5) == 0.0
+    assert region_iou_at_k([], _GOLD, k=5) == 0.0
+
+
 # -- channel_recall aggregation -------------------------------------------
 
 
@@ -88,3 +135,4 @@ def test_channel_recall_aggregates_all_three():
     assert out["tr_at_k"] == pytest.approx(0.5)  # 1 of 2 overlaps
     assert out["gold_span_contained_at_k"] == pytest.approx(0.5)
     assert out["iou_at_1"] == pytest.approx(0.25)  # (0.5 + 0.0)/2
+    assert out["region_iou_at_k"] == pytest.approx(0.25)  # (0.5 + 0.0)/2, single chunks

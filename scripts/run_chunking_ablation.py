@@ -148,11 +148,18 @@ def chunk_stats(conn: psycopg.Connection, strategy: str) -> dict:
 
 
 def measure_strategy(conn: psycopg.Connection, strategy: str, examples) -> tuple[dict, dict]:
-    """Per-channel TR@5 + GoldSpanContained@5 + IoU@1 + per-example detail."""
+    """Per-channel RegionIoU@5 (selector) + TR@5 + GoldSpanContained@5 + IoU@1.
+
+    Methodology: dev_gold single_clip spans are answer REGIONS (~108s, multi-
+    claim by design), so RegionIoU@5 — IoU of the union of top-5 chunks vs the
+    gold region — is the chunking selector. TR@5 (saturated), Contained@5, and
+    IoU@1 are reported as descriptive only (see eval/reports/.../methodology.mdx
+    and docs/eval-methodology.md)."""
     fns = _channel_fns(strategy)
     tr5 = {}
     contained5 = {}
     iou1 = {}
+    region_iou5 = {}
     per_example_pass = {ex.example_id: {} for ex in examples}
     per_example_topk = {ex.example_id: {} for ex in examples}
     for name, fn in fns.items():
@@ -160,10 +167,12 @@ def measure_strategy(conn: psycopg.Connection, strategy: str, examples) -> tuple
         tr5[name] = m["tr_at_k"]
         contained5[name] = m["gold_span_contained_at_k"]
         iou1[name] = m["iou_at_1"]
+        region_iou5[name] = m["region_iou_at_k"]
         for ex, p, tk in zip(examples, m["per_example_pass"], m["top_ks"], strict=True):
             per_example_pass[ex.example_id][name] = bool(p)
             per_example_topk[ex.example_id][name] = tk
     summary = {
+        "per_channel_region_iou_at_5": region_iou5,
         "per_channel_tr_at_5": tr5,
         "per_channel_gold_span_contained_at_5": contained5,
         "per_channel_iou_at_1": iou1,
@@ -247,20 +256,32 @@ def _report(results: dict, run_ids: dict) -> None:
         ch = sm["per_channel_tr_at_5"]
         return ch, sm
 
-    sys.stdout.write("\n=== CHUNKING ABLATION (PROVISIONAL — no winner) ===\n")
-    sys.stdout.write("TR@5 (rrf_4ch) / GoldSpanContained@5 (rrf) / IoU@1 (rrf) per strategy:\n")
+    sys.stdout.write("\n=== CHUNKING ABLATION (PROVISIONAL) ===\n")
     sys.stdout.write(
-        f"{'strategy':20} {'chunks':>7} {'TR@5':>6} {'Contained@5':>12} {'IoU@1':>7} {'aligned':>8}\n"
+        "Selector = RegionIoU@5 (rrf_4ch). TR@5 / Contained@5 / IoU@1 descriptive only.\n"
+    )
+    sys.stdout.write(
+        f"{'strategy':20} {'chunks':>7} {'RegIoU@5':>9} {'TR@5':>6} "
+        f"{'Contained@5':>12} {'IoU@1':>7} {'aligned':>8}\n"
     )
     for s in (BASELINE, CANDIDATE):
         _ch, sm = fmt(s)
+        reg = sm["per_channel_region_iou_at_5"]["rrf_4ch"]
         tr = sm["per_channel_tr_at_5"]["rrf_4ch"]
         cont = sm["per_channel_gold_span_contained_at_5"]["rrf_4ch"]
         iou = sm["per_channel_iou_at_1"]["rrf_4ch"]
         sys.stdout.write(
-            f"{s:20} {sm['n_total']:>7} {tr:>6.2f} {cont:>12.2f} {iou:>7.2f} {str(sm['aligned']):>8}\n"
+            f"{s:20} {sm['n_total']:>7} {reg:>9.2f} {tr:>6.2f} "
+            f"{cont:>12.2f} {iou:>7.2f} {str(sm['aligned']):>8}\n"
         )
-    sys.stdout.write("\nIoU@1 per channel (the granularity discriminator):\n")
+    sys.stdout.write("\nRegionIoU@5 per channel (the SELECTOR — union of top-5 vs gold region):\n")
+    for s in (BASELINE, CANDIDATE):
+        reg = results[s][0]["per_channel_region_iou_at_5"]
+        sys.stdout.write(
+            f"  {s:20} dense={reg['dense']:.2f} sparse={reg['sparse']:.2f} "
+            f"multivec={reg['multivec']:.2f} rrf_4ch={reg['rrf_4ch']:.2f}\n"
+        )
+    sys.stdout.write("\nIoU@1 per channel (descriptive — rank-1 chunk-vs-region size mismatch):\n")
     for s in (BASELINE, CANDIDATE):
         iou = results[s][0]["per_channel_iou_at_1"]
         sys.stdout.write(

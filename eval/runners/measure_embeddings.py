@@ -122,8 +122,63 @@ def iou_at_1(results: Sequence[ChannelResult | FusedResult], gold: GoldQuery) ->
     Penalizes chunks that are too large (big union) or off-center. This is the
     metric where coarse strategies (e.g. a 150s transcript_segment chunk around
     a 20s span) lose. 0.0 if no results or wrong video.
+
+    Descriptive only for the "clips are answer regions" methodology: against a
+    ~108s region IoU@1 mostly reports rank-1 chunk-vs-region size mismatch, not
+    strategy quality. Use ``region_iou_at_k`` as the selector.
     """
     return _iou_vs_gold(results[0], gold) if results else 0.0
+
+
+def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Merge overlapping/touching [start, end) intervals so union length is not
+    double-counted. Chunks within one strategy are non-overlapping, but RRF
+    fusion and defensive use make merging the safe choice."""
+    if not intervals:
+        return []
+    ordered = sorted(intervals)
+    merged = [ordered[0]]
+    for s, e in ordered[1:]:
+        last_s, last_e = merged[-1]
+        if s <= last_e:
+            merged[-1] = (last_s, max(last_e, e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def region_iou_at_k(
+    results: Sequence[ChannelResult | FusedResult], gold: GoldQuery, *, k: int
+) -> float:
+    """IoU of the UNION of the top-k retrieved chunks (on the gold video)
+    against the gold region.
+
+    This is the chunking selector for the "clips are answer regions"
+    methodology (dev_gold spans average ~108s; the question deliberately spans
+    multiple claims). It discriminates where the others cannot:
+
+      * TR@k is saturated (a 108s region overlaps something at any granularity).
+      * IoU@1 only sees the rank-1 chunk, so a strategy that tiles the region
+        with several small chunks is unfairly scored on one of them.
+      * Contained@k needs a single wrapping chunk, which no strategy produces
+        for a 108s region.
+
+    region_iou rewards covering the whole region (high intersection) without
+    dragging in unrelated time (the union grows when chunks overhang the
+    region), so it balances coverage against precision at region scale. 0.0 if
+    no top-k chunk is on the gold video.
+    """
+    spans = [(r.start_sec, r.end_sec) for r in results[:k] if r.video_id == gold.video_id]
+    if not spans:
+        return 0.0
+    inter = 0.0
+    union_chunks = 0.0
+    for s, e in _merge_intervals(spans):
+        union_chunks += e - s
+        inter += max(0.0, min(e, gold.end_sec) - max(s, gold.start_sec))
+    gold_len = gold.end_sec - gold.start_sec
+    union = union_chunks + gold_len - inter
+    return inter / union if union > 0 else 0.0
 
 
 ChannelFn = Callable[
@@ -185,14 +240,17 @@ def channel_recall(
             "tr_at_k": 0.0,
             "gold_span_contained_at_k": 0.0,
             "iou_at_1": 0.0,
+            "region_iou_at_k": 0.0,
             "per_example_pass": [],
             "per_example_contained": [],
             "per_example_iou": [],
+            "per_example_region_iou": [],
             "top_ks": [],
         }
     tr: list[bool] = []
     contained: list[bool] = []
     ious: list[float] = []
+    region_ious: list[float] = []
     top_ks: list[list[dict]] = []
     for ex in examples:
         results = channel_fn(conn, ex.question)
@@ -200,14 +258,17 @@ def channel_recall(
         tr.append(_passes_at_k(results, ex, k=k))
         contained.append(gold_span_contained_at_k(results, ex, k=k))
         ious.append(iou_at_1(results, ex))
+        region_ious.append(region_iou_at_k(results, ex, k=k))
     n = len(examples)
     return {
         "tr_at_k": sum(tr) / n,
         "gold_span_contained_at_k": sum(contained) / n,
         "iou_at_1": sum(ious) / n,
+        "region_iou_at_k": sum(region_ious) / n,
         "per_example_pass": tr,
         "per_example_contained": contained,
         "per_example_iou": ious,
+        "per_example_region_iou": region_ious,
         "top_ks": top_ks,
     }
 
