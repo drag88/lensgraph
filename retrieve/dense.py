@@ -22,8 +22,15 @@ def retrieve(
     query: str,
     *,
     top_k: int = 30,
+    chunking_strategy: str = "fixed_window",
 ) -> list[ChannelResult]:
-    """Encode the query as a BGE-M3 dense vector, return top-k chunks by cosine similarity."""
+    """Encode the query as a BGE-M3 dense vector, return top-k chunks by cosine similarity.
+
+    ``chunking_strategy`` filters to one strategy's chunks so multiple
+    strategies can coexist in the ``chunks`` table without retrieval mixing
+    them (the chunking ablation). Defaults to ``fixed_window`` — the production
+    strategy — so the answer loop is unaffected by ablation rows.
+    """
     register_vector(conn)
 
     qvec = encode([query]).dense[0]
@@ -33,10 +40,11 @@ def retrieve(
         SELECT c.chunk_id, c.video_id, c.start_sec, c.end_sec, c.text,
                1 - (d.embedding <=> %s) AS score
         FROM dense_embeds d JOIN chunks c USING (chunk_id)
+        WHERE c.chunking_strategy = %s
         ORDER BY d.embedding <=> %s
         LIMIT %s
         """,
-        (qvec, qvec, top_k),
+        (qvec, chunking_strategy, qvec, top_k),
     ).fetchall()
 
     return [

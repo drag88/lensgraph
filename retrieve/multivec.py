@@ -36,13 +36,19 @@ def retrieve(
     *,
     top_k: int = 30,
     prefilter_k: int = 100,
+    chunking_strategy: str = "fixed_window",
 ) -> list[ChannelResult]:
-    """Two-stage retrieval: dense+sparse prefilter, then MaxSim over candidate token vectors."""
+    """Two-stage retrieval: dense+sparse prefilter, then MaxSim over candidate token vectors.
+
+    ``chunking_strategy`` is threaded to the dense+sparse prefilter, so the
+    candidate set — and therefore the MaxSim output — is confined to one
+    strategy's chunks. Defaults to ``fixed_window``.
+    """
     qmulti = encode([query]).multi[0]  # (T_q, 1024)
 
-    # 1. Prefilter via the other two text channels.
-    d_results = dense.retrieve(conn, query, top_k=prefilter_k)
-    s_results = sparse.retrieve(conn, query, top_k=prefilter_k)
+    # 1. Prefilter via the other two text channels (strategy-confined).
+    d_results = dense.retrieve(conn, query, top_k=prefilter_k, chunking_strategy=chunking_strategy)
+    s_results = sparse.retrieve(conn, query, top_k=prefilter_k, chunking_strategy=chunking_strategy)
     candidate_ids = list({r.chunk_id for r in d_results} | {r.chunk_id for r in s_results})
     if not candidate_ids:
         return []

@@ -33,6 +33,7 @@ SELECT chunk_id, video_id, start_sec, end_sec, text,
        ts_rank(tsv, websearch_to_tsquery('english', %s)) AS score
 FROM chunks
 WHERE tsv @@ websearch_to_tsquery('english', %s)
+  AND chunking_strategy = %s
 ORDER BY score DESC
 LIMIT %s
 """
@@ -42,6 +43,7 @@ SELECT chunk_id, video_id, start_sec, end_sec, text,
        ts_rank(tsv, to_tsquery('english', %s)) AS score
 FROM chunks
 WHERE tsv @@ to_tsquery('english', %s)
+  AND chunking_strategy = %s
 ORDER BY score DESC
 LIMIT %s
 """
@@ -178,14 +180,16 @@ def retrieve(
     query: str,
     *,
     top_k: int = 30,
+    chunking_strategy: str = "fixed_window",
 ) -> list[ChannelResult]:
     """Run a Postgres FTS query against chunks.tsv, return top-k by ts_rank.
 
     Tries the precise ``websearch_to_tsquery`` path first; falls back to an
     OR-expanded ``to_tsquery`` over meaningful tokens when precise returns
-    zero rows.
+    zero rows. ``chunking_strategy`` filters to one strategy's chunks (defaults
+    to ``fixed_window``).
     """
-    rows = conn.execute(_PRECISE_SQL, (query, query, top_k)).fetchall()
+    rows = conn.execute(_PRECISE_SQL, (query, query, chunking_strategy, top_k)).fetchall()
     if rows:
         return [_to_result(row, i) for i, row in enumerate(rows)]
 
@@ -193,5 +197,5 @@ def retrieve(
     if expanded is None:
         return []
 
-    rows = conn.execute(_FALLBACK_SQL, (expanded, expanded, top_k)).fetchall()
+    rows = conn.execute(_FALLBACK_SQL, (expanded, expanded, chunking_strategy, top_k)).fetchall()
     return [_to_result(row, i) for i, row in enumerate(rows)]

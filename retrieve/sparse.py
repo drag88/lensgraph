@@ -24,8 +24,13 @@ def retrieve(
     query: str,
     *,
     top_k: int = 30,
+    chunking_strategy: str = "fixed_window",
 ) -> list[ChannelResult]:
-    """Encode the query as a BGE-M3 sparse vector, return top-k chunks by inner product."""
+    """Encode the query as a BGE-M3 sparse vector, return top-k chunks by inner product.
+
+    ``chunking_strategy`` filters to one strategy's chunks (see ``dense.retrieve``).
+    Defaults to ``fixed_window`` so production is unaffected by ablation rows.
+    """
     register_vector(conn)
 
     raw_sparse = encode([query]).sparse[0]
@@ -36,10 +41,11 @@ def retrieve(
         SELECT c.chunk_id, c.video_id, c.start_sec, c.end_sec, c.text,
                -(s.embedding <#> %s) AS score
         FROM sparse_embeds s JOIN chunks c USING (chunk_id)
+        WHERE c.chunking_strategy = %s
         ORDER BY s.embedding <#> %s
         LIMIT %s
         """,
-        (sv, sv, top_k),
+        (sv, chunking_strategy, sv, top_k),
     ).fetchall()
 
     return [
