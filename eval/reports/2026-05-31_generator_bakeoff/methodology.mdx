@@ -7,6 +7,12 @@
 **Judge:** `deepseek-v3.2` (constant, cross-family) · prompt `faithfulness_v1.md` sha256 `3fb7316ac981…`
 **Outcome:** ⚠️ **PROVISIONAL — no winner locked.** The judge is not yet kappa-validated, and neither candidate meets all per-component minimums (both fail the p95 latency minimum). No ADR 004 amendment.
 
+> **Update 2026-06-01.** These numbers were computed on the **pre-dedup**
+> chunk substrate (212 chunks; chunk text was triplicated/time-shifted by the
+> rolling-caption VTT bug fixed on 2026-06-01, now 213 chunks). Faithfulness
+> saturated at 1.0/1.0 here despite the noisy text. Re-run this bakeoff on the
+> clean substrate alongside the kappa-validated judge before any selection.
+
 ## Why this is provisional, not a selection
 
 A generator faithfulness number is only a *claim* once the judge clears

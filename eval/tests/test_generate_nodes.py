@@ -34,7 +34,8 @@ from generate.state import (
 
 pytestmark = pytest.mark.slow
 
-# The corpus already in the dev DB (handoff says 212 chunks across 3 talks).
+# The corpus already in the dev DB (213 chunks across 3 talks after the
+# 2026-06-01 rolling-caption dedup re-chunk; was 212 pre-fix).
 CORPUS_ID = "ai_engineering_v0"
 # Tengyu's canonical exit-gate query (handoff: "tengyu-rag-library-analogy").
 TENGYU_QUERY = (
@@ -145,9 +146,7 @@ def test_verify_node_high_confidence_does_not_loop(monkeypatch):
 
     def fake(**_k):
         return providers.ProviderResponse(
-            raw_text=json.dumps(
-                {"confidence": 0.92, "reason": "ok", "refined_query": ""}
-            ),
+            raw_text=json.dumps({"confidence": 0.92, "reason": "ok", "refined_query": ""}),
             latency_ms=10,
             provider_model_id="deepseek-ai/DeepSeek-V3.2",
         )
@@ -172,9 +171,7 @@ def test_verify_node_low_confidence_loops_once(monkeypatch):
 
     def fake(**_k):
         return providers.ProviderResponse(
-            raw_text=json.dumps(
-                {"confidence": 0.2, "reason": "weak", "refined_query": "better q"}
-            ),
+            raw_text=json.dumps({"confidence": 0.2, "reason": "weak", "refined_query": "better q"}),
             latency_ms=10,
             provider_model_id="deepseek-ai/DeepSeek-V3.2",
         )

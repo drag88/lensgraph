@@ -1,5 +1,16 @@
 # Bakeoff #1 — Text Embeddings
 
+> **Update 2026-06-01 — substrate corrected, re-run.** A rolling-caption VTT
+> dedup bug (chunk text was triplicated and time-shifted; `chunking/fixed_window.py`)
+> was fixed and the 3 talks re-chunked + re-embedded (212 → **213** chunks; W
+> gained one chunk, boundaries shifted to align text with its timestamp). The
+> bakeoff was re-run on the clean substrate: **run `embeddings-bakeoff-ada840be66b9`**.
+> Winner UNCHANGED (`bge-m3-all-channels` locked, vector-best TR@5 = 1.00).
+> `rrf_4ch` TR@5 **improved 0.90 → 1.00** (the cleaner text fixed the one
+> previously-failing fused case, `sally-staying-on-task-attention`); `dense`/
+> `multivec` stay 1.00, `sparse` stays 0.70. The 2026-05-27 numbers below are the
+> pre-fix snapshot, retained for the record.
+
 **Run date:** 2026-05-27
 **Run ID:** `embeddings-bakeoff-7b422944f8e0`
 **Code path:** `embeddings_bakeoff`
