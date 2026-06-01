@@ -27,10 +27,41 @@ Consolidated current-state handoff. Full session-by-session detail lives in
    selector wired into `scripts/run_chunking_ablation.py`; report + methodology
    doc updated. Run IDs `chunking-ablation-fixe-b793d883` / `-tran-831b4d84`.
 
+## Boundary kappa (provisional, measured-and-failing)
+
+The boundary judge `boundary_v1` (sha `f7369216b385`, deepseek-v3.2, cross-family)
+was scored against human labels on the 21 fixed_window boundary-audit clips via
+`scripts/run_boundary_kappa.py`. **Outcome: the judge is NOT validated.**
+
+- **standalone kappa ≈ 0.20** (linear 0.199 / quad 0.198 / binarized 0.236), n=21,
+  now with real label variance ({1:1, 2:2, 3:7, 4:5, 5:6}). So the earlier ≈0.07
+  was not only a variance artifact — the judge compresses standalone to 3–4 while
+  the human uses the full range (e.g. tengyu-02 human=1, judge=4). Fails the 0.60
+  gate; voids the judge for the standalone dimension.
+- **edge kappa borderline**: quad 0.617 (just clears 0.60), linear 0.466,
+  binarized 0.35, n=13. A fresh judge run disagrees with the verified labels on
+  several clips — the honest correction to the inflated 0.81 (which had accepted
+  the suggestions). Not safe to publish.
+
+Provenance (verified before commit): clip text comes from **fixed_window chunks**,
+checked against the local VTTs at each span (token-Jaccard 0.82–1.00); Arize is a
+chapter slice of `m12vGjfbNlo` so watch links use absolute time (talk-relative +
+516s) while spans are talk-relative. Human **edge** labels are `recheck_verified`
+(scored after seeing rubric suggestions — not blind); **standalone** rejudge rows
+are `cold_rejudge` (blind). The kappa is **measured-and-failing / provisional, not
+a validated boundary judge**. Exact figures live in the untracked
+`dev/active/phase-2-week-10/boundary_kappa_results.json`; inputs
+(`boundary_clips.json`, `boundary_human_labels.csv`) are local/untracked.
+
+Decision: **park boundary here.** Do not tune the standalone rubric to pass — the
+failure is a real result; revising now risks overfitting. The chunking winner
+still cannot be locked on boundary quality; the RegionIoU@5 retrieval lead
+(fixed_window) is unaffected and stands on its own.
+
 ## Current state (what is true now)
 
 - HEAD: run `git log --oneline -8` for the current branch tip. Gates green:
-  `validate-evals-strict`, `phase0-gate` (29/3), `make test` (203), `lint`.
+  `validate-evals-strict`, `phase0-gate` (29/3), `make test` (216), `lint`.
   Postgres stopped (volume `pgdata` persists data).
 - **DB:** 3 talks. chunks: **213 fixed_window + 82 transcript_segment** (both
   embedded; dense=sparse=token=tsv aligned per strategy). 529 frames (visual,
